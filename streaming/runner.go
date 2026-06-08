@@ -59,6 +59,12 @@ func (r *Runner) Run(ctx context.Context, source <-chan Event) error {
 		if err := r.dispatch(event); err != nil {
 			return fmt.Errorf("runner: handler error: %w", err)
 		}
+		if event.Kind == EventError {
+			if event.Err != nil {
+				return event.Err
+			}
+			return fmt.Errorf("runner: stream error event with nil error")
+		}
 		if event.Kind == EventDone {
 			return nil
 		}

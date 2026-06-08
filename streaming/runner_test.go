@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -70,6 +71,41 @@ func TestRunner_HandlerError(t *testing.T) {
 	err := runner.Run(context.Background(), ch)
 	if err == nil {
 		t.Fatal("expected error from failing handler")
+	}
+}
+
+func TestRunner_ReturnsEventErrorAfterDispatch(t *testing.T) {
+	ch := make(chan Event, 3)
+	streamErr := errors.New("stream failed")
+	ch <- Event{Kind: EventError, Err: streamErr}
+	ch <- Event{Kind: EventDone}
+	close(ch)
+
+	var dispatched []EventKind
+	runner := NewRunner()
+	runner.On("collector", func(event Event) error {
+		dispatched = append(dispatched, event.Kind)
+		return nil
+	})
+
+	err := runner.Run(context.Background(), ch)
+	if !errors.Is(err, streamErr) {
+		t.Fatalf("expected stream error, got %v", err)
+	}
+	if len(dispatched) != 1 || dispatched[0] != EventError {
+		t.Fatalf("expected only EventError to be dispatched, got %v", dispatched)
+	}
+}
+
+func TestRunner_ReturnsErrorForEventErrorWithoutDetails(t *testing.T) {
+	ch := make(chan Event, 1)
+	ch <- Event{Kind: EventError}
+	close(ch)
+
+	runner := NewRunner()
+	err := runner.Run(context.Background(), ch)
+	if err == nil || err.Error() != "runner: stream error event with nil error" {
+		t.Fatalf("expected nil-detail stream error, got %v", err)
 	}
 }
 
