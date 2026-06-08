@@ -325,6 +325,41 @@ func TestStream_ProviderErrorEventWithoutDetailsFails(t *testing.T) {
 	}
 }
 
+func TestStream_RecoversPanicAsEventError(t *testing.T) {
+	provider := &fakeStreamProvider{
+		steps: []streamResponseStep{
+			{textChunks: []string{"unreached"}},
+		},
+	}
+	rt := NewRuntime(RuntimeConfig{
+		Provider: provider,
+		Session:  NewSession(SessionConfig{Model: "fake-model"}),
+		StreamingMiddleware: []StreamingMiddleware{
+			func(StreamingHandler) StreamingHandler {
+				return func(context.Context, *StreamingStep, chan<- streaming.Event) (*StreamingStepResult, error) {
+					panic("middleware exploded")
+				}
+			},
+		},
+	})
+
+	ch, err := rt.Stream(context.Background(), "Hi")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	events, streamErr := collectEvents(ch)
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "runtime: stream panic: middleware exploded") {
+		t.Fatalf("expected recovered panic error, got %v", streamErr)
+	}
+	if !hasEventKind(events, streaming.EventError) {
+		t.Fatalf("expected EventError, got %+v", events)
+	}
+	if hasEventKind(events, streaming.EventDone) {
+		t.Fatalf("did not expect EventDone, got %+v", events)
+	}
+}
+
 func TestStream_WithToolCall(t *testing.T) {
 	provider := &fakeStreamProvider{
 		steps: []streamResponseStep{

@@ -40,6 +40,15 @@ func (r *Runtime) Stream(ctx context.Context, userMessage string) (<-chan stream
 		defer close(out)
 		trace := exec.startRunTrace(ctx, userMessage)
 		adapter := streamingRunOutputAdapter{rt: r, out: out}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				runtimeErr := fmt.Errorf("runtime: stream panic: %v", recovered)
+				if emitErr := adapter.EmitError(trace.ctx, runtimeErr); emitErr != nil {
+					r.logger.Warn().Err(emitErr).Msg("runtime: failed to emit streaming panic event")
+				}
+				exec.endRunTrace(trace, runtimeErr)
+			}
+		}()
 		if _, err := exec.executeEngineStreamingTurn(userMessage, handler, adapter, trace, out); err != nil {
 			runtimeErr, traceErr := runtimeTurnError(err)
 			if emitErr := adapter.EmitError(trace.ctx, runtimeErr); emitErr != nil {
