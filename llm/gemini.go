@@ -176,9 +176,6 @@ func (g *GeminiProvider) buildRequestBody(req *Request) map[string]any {
 	if req.Temperature != nil {
 		genConfig["temperature"] = *req.Temperature
 	}
-	if len(genConfig) > 0 {
-		body["generationConfig"] = genConfig
-	}
 
 	if len(req.Tools) > 0 {
 		funcDecls := make([]map[string]any, len(req.Tools))
