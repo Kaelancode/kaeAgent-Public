@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Kaelancode/kaeAgent-Public/llm"
-	"github.com/Kaelancode/kaeAgent-Public/streaming"
-	"github.com/Kaelancode/kaeAgent-Public/tools"
+	"github.com/yourorg/agent-sdk/llm"
+	"github.com/yourorg/agent-sdk/streaming"
+	"github.com/yourorg/agent-sdk/tools"
 )
 
 type streamResponseStep struct {
@@ -19,6 +19,7 @@ type streamResponseStep struct {
 	toolCalls    []llm.ToolCall
 	usage        llm.Usage
 	finishReason string
+	omitDone     bool
 }
 
 type fakeStreamProvider struct {
@@ -76,7 +77,9 @@ func (f *fakeStreamProvider) Stream(_ context.Context, req *llm.Request) (<-chan
 			for _, event := range step.rawEvents {
 				ch <- event
 			}
-			ch <- llm.Event{Kind: llm.EventDone}
+			if !step.omitDone {
+				ch <- llm.Event{Kind: llm.EventDone}
+			}
 			return
 		}
 
@@ -102,7 +105,9 @@ func (f *fakeStreamProvider) Stream(_ context.Context, req *llm.Request) (<-chan
 			}}
 		}
 
-		ch <- llm.Event{Kind: llm.EventDone}
+		if !step.omitDone {
+			ch <- llm.Event{Kind: llm.EventDone}
+		}
 	}()
 
 	return ch, nil
@@ -222,6 +227,54 @@ func TestStream_SimpleTextResponse(t *testing.T) {
 	}
 	if msgs[1].Role != "assistant" || msgs[1].Content != "Hello there!" {
 		t.Errorf("expected assistant message 'Hello there!', got role=%s content=%q", msgs[1].Role, msgs[1].Content)
+	}
+}
+
+func TestStream_ClosedProviderChannelWithoutTerminalEventFails(t *testing.T) {
+	provider := &fakeStreamProvider{
+		steps: []streamResponseStep{
+			{
+				textChunks: []string{"partial"},
+				usage:      llm.Usage{InputTokens: 3, OutputTokens: 1, TotalTokens: 4},
+				omitDone:   true,
+			},
+		},
+	}
+	tracer := &recordingTracer{}
+	rt := NewRuntime(RuntimeConfig{
+		Provider: provider,
+		Session:  NewSession(SessionConfig{Model: "fake-model"}),
+		Tracer:   tracer,
+	})
+
+	ch, err := rt.Stream(context.Background(), "Hi")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	events, streamErr := collectEvents(ch)
+	if streamErr == nil || !strings.Contains(streamErr.Error(), "stream ended without terminal event") {
+		t.Fatalf("expected missing terminal event error, got %v", streamErr)
+	}
+	if !hasEventKind(events, streaming.EventError) {
+		t.Fatalf("expected EventError, got %+v", events)
+	}
+	if hasEventKind(events, streaming.EventDone) {
+		t.Fatalf("did not expect EventDone, got %+v", events)
+	}
+
+	var endedWithCloseErr bool
+	tracer.mu.Lock()
+	ended := append([]error(nil), tracer.ended...)
+	for _, err := range tracer.ended {
+		if err != nil && strings.Contains(err.Error(), "stream ended without terminal event") {
+			endedWithCloseErr = true
+			break
+		}
+	}
+	tracer.mu.Unlock()
+	if !endedWithCloseErr {
+		t.Fatalf("expected llm span to end with missing terminal event error, got %+v", ended)
 	}
 }
 

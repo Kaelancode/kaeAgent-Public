@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"strings"
 
-	agentengine "github.com/Kaelancode/kaeAgent-Public/agent/internal/engine"
-	agentstreaming "github.com/Kaelancode/kaeAgent-Public/agent/internal/streaming"
-	agenttrace "github.com/Kaelancode/kaeAgent-Public/agent/internal/trace"
-	"github.com/Kaelancode/kaeAgent-Public/llm"
-	"github.com/Kaelancode/kaeAgent-Public/observability"
-	"github.com/Kaelancode/kaeAgent-Public/streaming"
-	"github.com/Kaelancode/kaeAgent-Public/tools"
+	agentengine "github.com/yourorg/agent-sdk/agent/internal/engine"
+	agentstreaming "github.com/yourorg/agent-sdk/agent/internal/streaming"
+	agenttrace "github.com/yourorg/agent-sdk/agent/internal/trace"
+	"github.com/yourorg/agent-sdk/llm"
+	"github.com/yourorg/agent-sdk/observability"
+	"github.com/yourorg/agent-sdk/streaming"
+	"github.com/yourorg/agent-sdk/tools"
 )
 
 func (e *runExecutor) buildStepInfo(step int) *Step {
@@ -54,6 +54,47 @@ func normalizeStreamingStepResult(result *StreamingStepResult) *runLoopResult {
 		TokensUsed: result.TokensUsed,
 		Text:       text,
 	}
+}
+
+func (e *runExecutor) finishStreamingLLMSpan(ctx context.Context, span observability.Span, req *llm.Request, text string, toolCalls []tools.ToolCall, usage llm.Usage, finishReason string, err error) {
+	if e.rt.tracer == nil || span == nil {
+		return
+	}
+	responseAttrs := map[string]any{
+		"gen_ai.response.finish_reasons": []string{finishReason},
+		"gen_ai.response.model":          req.Model,
+		"gen_ai.usage.input_tokens":      usage.InputTokens,
+		"gen_ai.usage.output_tokens":     usage.OutputTokens,
+	}
+	if text != "" {
+		outputJSON, _ := agenttrace.AssistantTextOutput(text, finishReason)
+		responseAttrs["gen_ai.output.messages"] = outputJSON
+		responseAttrs["langfuse.observation.output"] = text
+		e.rt.tracer.AddEvent(ctx, span, "gen_ai.assistant.message", map[string]string{
+			"role":                   "assistant",
+			"content":                text,
+			"gen_ai.output.messages": outputJSON,
+		})
+	} else if len(toolCalls) > 0 {
+		outputJSON, outputSummary := agenttrace.AssistantToolCallsOutputFromTools(toolCalls, finishReason)
+		responseAttrs["gen_ai.output.messages"] = outputJSON
+		responseAttrs["langfuse.observation.output"] = outputSummary
+		e.rt.tracer.AddEvent(ctx, span, "gen_ai.assistant.message", map[string]string{
+			"role":                   "assistant",
+			"gen_ai.output.messages": outputJSON,
+			"content":                outputSummary,
+		})
+	} else {
+		outputJSON, _ := agenttrace.AssistantTextOutput("", finishReason)
+		responseAttrs["gen_ai.output.messages"] = outputJSON
+		responseAttrs["langfuse.observation.output"] = ""
+		e.rt.tracer.AddEvent(ctx, span, "gen_ai.assistant.message", map[string]string{
+			"role":                   "assistant",
+			"gen_ai.output.messages": outputJSON,
+		})
+	}
+	e.rt.tracer.SetSpanAttributes(ctx, span, responseAttrs)
+	e.rt.tracer.EndSpan(ctx, span, err)
 }
 
 func (e *runExecutor) handleTransferStep(trace *runTraceState, output runOutputAdapter, result *runLoopResult) error {
@@ -342,23 +383,12 @@ func (e *runExecutor) executeStreamingStep(ctx context.Context, step *StreamingS
 			if !ok {
 				toolCalls, asmErr := assembler.Assemble()
 				if asmErr != nil {
+					e.finishStreamingLLMSpan(ctx, llmSpan, req, textBuilder.String(), nil, usage, responseFinishReason, asmErr)
 					return nil, asmErr
 				}
-				transferStep, transferErr := e.extractTransfer(toolCalls, textBuilder.String())
-				if transferErr != nil {
-					return nil, transferErr
-				}
-				return &StreamingStepResult{
-					Response: &llm.Response{
-						Content:      nil,
-						Usage:        usage,
-						FinishReason: responseFinishReason,
-					},
-					ToolCalls:    toolCalls,
-					Transfer:     transferStep,
-					TokensUsed:   usage,
-					StreamedText: textBuilder.String(),
-				}, nil
+				err := fmt.Errorf("runtime: stream ended without terminal event")
+				e.finishStreamingLLMSpan(ctx, llmSpan, req, textBuilder.String(), toolCalls, usage, responseFinishReason, err)
+				return nil, err
 			}
 
 			switch event.Kind {
@@ -415,35 +445,7 @@ func (e *runExecutor) executeStreamingStep(ctx context.Context, step *StreamingS
 				if asmErr != nil {
 					return nil, asmErr
 				}
-				if e.rt.tracer != nil && llmSpan != nil {
-					responseAttrs := map[string]any{
-						"gen_ai.response.finish_reasons": []string{responseFinishReason},
-						"gen_ai.response.model":          req.Model,
-						"gen_ai.usage.input_tokens":      usage.InputTokens,
-						"gen_ai.usage.output_tokens":     usage.OutputTokens,
-					}
-					if text := textBuilder.String(); text != "" {
-						outputJSON, _ := agenttrace.AssistantTextOutput(text, responseFinishReason)
-						responseAttrs["gen_ai.output.messages"] = outputJSON
-						responseAttrs["langfuse.observation.output"] = text
-						e.rt.tracer.AddEvent(ctx, llmSpan, "gen_ai.assistant.message", map[string]string{
-							"role":                   "assistant",
-							"content":                text,
-							"gen_ai.output.messages": outputJSON,
-						})
-					} else if len(toolCalls) > 0 {
-						outputJSON, outputSummary := agenttrace.AssistantToolCallsOutputFromTools(toolCalls, responseFinishReason)
-						responseAttrs["gen_ai.output.messages"] = outputJSON
-						responseAttrs["langfuse.observation.output"] = outputSummary
-						e.rt.tracer.AddEvent(ctx, llmSpan, "gen_ai.assistant.message", map[string]string{
-							"role":                   "assistant",
-							"gen_ai.output.messages": outputJSON,
-							"content":                outputSummary,
-						})
-					}
-					e.rt.tracer.SetSpanAttributes(ctx, llmSpan, responseAttrs)
-					e.rt.tracer.EndSpan(ctx, llmSpan, nil)
-				}
+				e.finishStreamingLLMSpan(ctx, llmSpan, req, textBuilder.String(), toolCalls, usage, responseFinishReason, nil)
 
 				transferStep, transferErr := e.extractTransfer(toolCalls, textBuilder.String())
 				if transferErr != nil {

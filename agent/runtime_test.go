@@ -8,13 +8,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Kaelancode/kaeAgent-Public/compaction"
-	"github.com/Kaelancode/kaeAgent-Public/compaction/strategy/slidingwindow"
-	"github.com/Kaelancode/kaeAgent-Public/llm"
-	"github.com/Kaelancode/kaeAgent-Public/observability"
-	"github.com/Kaelancode/kaeAgent-Public/store"
-	"github.com/Kaelancode/kaeAgent-Public/streaming"
-	"github.com/Kaelancode/kaeAgent-Public/tools"
+	"github.com/yourorg/agent-sdk/compaction"
+	"github.com/yourorg/agent-sdk/compaction/strategy/slidingwindow"
+	"github.com/yourorg/agent-sdk/llm"
+	"github.com/yourorg/agent-sdk/observability"
+	"github.com/yourorg/agent-sdk/store"
+	"github.com/yourorg/agent-sdk/streaming"
+	"github.com/yourorg/agent-sdk/tools"
 )
 
 type fakeProvider struct {
@@ -130,6 +130,7 @@ type recordingTracer struct {
 	mu     sync.Mutex
 	events []recordedTraceEvent
 	attrs  []map[string]any
+	ended  []error
 }
 
 var _ observability.Tracer = (*recordingTracer)(nil)
@@ -138,7 +139,11 @@ func (r *recordingTracer) StartSpan(ctx context.Context, _ string, _ map[string]
 	return ctx, struct{}{}
 }
 
-func (r *recordingTracer) EndSpan(_ context.Context, _ observability.Span, _ error) {}
+func (r *recordingTracer) EndSpan(_ context.Context, _ observability.Span, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ended = append(r.ended, err)
+}
 
 func (r *recordingTracer) AddEvent(_ context.Context, _ observability.Span, name string, attrs map[string]string) {
 	r.mu.Lock()
