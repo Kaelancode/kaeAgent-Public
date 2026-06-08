@@ -50,6 +50,62 @@ func TestGeminiReadSSE_ScanErrorDoesNotEmitDone(t *testing.T) {
 	assertTerminalErrorWithoutDone(t, events, "gemini: sse read: boom")
 }
 
+func TestProviderReadSSE_ParseErrorDoesNotEmitDone(t *testing.T) {
+	tests := []struct {
+		name    string
+		run     func(chan<- Event)
+		wantErr string
+	}{
+		{
+			name: "openai",
+			run: func(ch chan<- Event) {
+				provider := &OpenAIProvider{}
+				provider.readSSE(context.Background(), io.NopCloser(strings.NewReader("data: {\n\ndata: [DONE]\n")), ch)
+			},
+			wantErr: "openai: sse parse: unexpected end of JSON input",
+		},
+		{
+			name: "claude delta",
+			run: func(ch chan<- Event) {
+				provider := &ClaudeProvider{}
+				provider.readSSE(context.Background(), io.NopCloser(strings.NewReader("event: content_block_delta\ndata: {\n\nevent: message_stop\ndata: {}\n")), ch)
+			},
+			wantErr: "claude: sse delta parse: unexpected end of JSON input",
+		},
+		{
+			name: "claude start",
+			run: func(ch chan<- Event) {
+				provider := &ClaudeProvider{}
+				provider.readSSE(context.Background(), io.NopCloser(strings.NewReader("event: content_block_start\ndata: {\n\nevent: message_stop\ndata: {}\n")), ch)
+			},
+			wantErr: "claude: sse start parse: unexpected end of JSON input",
+		},
+		{
+			name: "gemini",
+			run: func(ch chan<- Event) {
+				provider := &GeminiProvider{}
+				provider.readSSE(context.Background(), io.NopCloser(strings.NewReader("data: {\n")), ch)
+			},
+			wantErr: "gemini: sse parse: unexpected end of JSON input",
+		},
+		{
+			name: "qwen",
+			run: func(ch chan<- Event) {
+				provider := &QwenProvider{}
+				provider.readSSE(context.Background(), io.NopCloser(strings.NewReader("data: {\n\ndata: [DONE]\n")), ch)
+			},
+			wantErr: "qwen: sse parse: unexpected end of JSON input",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := collectProviderEvents(tt.run)
+			assertTerminalErrorWithoutDone(t, events, tt.wantErr)
+		})
+	}
+}
+
 func collectProviderEvents(run func(chan<- Event)) []Event {
 	ch := make(chan Event, 16)
 	go run(ch)

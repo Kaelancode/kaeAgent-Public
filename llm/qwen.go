@@ -12,8 +12,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Kaelancode/kaeAgent-Public/internal/llmhttp"
-	"github.com/Kaelancode/kaeAgent-Public/internal/sse"
+	"github.com/yourorg/agent-sdk/internal/llmhttp"
+	"github.com/yourorg/agent-sdk/internal/sse"
 )
 
 const (
@@ -252,7 +252,7 @@ func (q *QwenProvider) readSSE(ctx context.Context, body io.ReadCloser, ch chan<
 			if !sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("qwen: sse parse: %w", err)}) {
 				return
 			}
-			continue
+			return
 		}
 
 		if len(chunk.Choices) > 0 {

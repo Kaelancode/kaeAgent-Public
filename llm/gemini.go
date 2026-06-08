@@ -12,8 +12,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Kaelancode/kaeAgent-Public/internal/llmhttp"
-	"github.com/Kaelancode/kaeAgent-Public/internal/sse"
+	"github.com/yourorg/agent-sdk/internal/llmhttp"
+	"github.com/yourorg/agent-sdk/internal/sse"
 )
 
 const (
@@ -340,7 +340,7 @@ func (g *GeminiProvider) readSSE(ctx context.Context, body io.ReadCloser, ch cha
 			if !sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("gemini: sse parse: %w", err)}) {
 				return
 			}
-			continue
+			return
 		}
 
 		if len(chunk.Candidates) > 0 {
