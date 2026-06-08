@@ -1563,6 +1563,46 @@ func TestRuntime_PreflightGuardForcesCompactionNearContextLimit(t *testing.T) {
 	}
 }
 
+func TestRuntime_TokenBudgetDoesNotDefaultModelContextLimit(t *testing.T) {
+	provider := &fakeProvider{
+		responses: []*llm.Response{
+			{Content: []llm.ContentBlock{{Type: "text", Text: "ok"}}, FinishReason: "stop"},
+		},
+	}
+
+	session := NewSession(SessionConfig{
+		Model:        "fake-model",
+		TokenBudget:  1,
+		TrimStrategy: TrimSlidingWindow,
+		MaxHistory:   10,
+	})
+	conv := NewConversation(TrimSlidingWindow, 10, 100)
+	conv.Append(llm.Message{Role: "user", Content: "1"})
+	conv.Append(llm.Message{Role: "assistant", Content: "2"})
+	conv.Append(llm.Message{Role: "user", Content: "3"})
+
+	rt := NewRuntime(RuntimeConfig{
+		Provider:           provider,
+		Session:            session,
+		Conversation:       conv,
+		Tools:              tools.NewRegistry(),
+		Dispatcher:         tools.NewDispatcher(tools.NewRegistry()),
+		Compactor:          compaction.NewEngine(nil, slidingwindow.New(2), nil),
+		OutputTokenReserve: 5,
+	})
+
+	if _, err := rt.Run(context.Background(), "4"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected 1 provider request, got %d", len(provider.requests))
+	}
+	if got := len(provider.requests[0].Messages); got != 4 {
+		t.Fatalf("expected token budget not to trigger preflight compaction, got %d messages", got)
+	}
+}
+
 func TestRuntime_RunPersistsToCapturedTargetAfterLoadState(t *testing.T) {
 	provider := &blockingProvider{
 		started: make(chan struct{}),

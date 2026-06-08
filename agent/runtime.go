@@ -6,16 +6,16 @@ import (
 	"sync"
 	"time"
 
-	agentengine "github.com/Kaelancode/kaeAgent-Public/agent/internal/engine"
-	"github.com/Kaelancode/kaeAgent-Public/compaction"
-	"github.com/Kaelancode/kaeAgent-Public/compaction/strategy/tokenlimit"
-	"github.com/Kaelancode/kaeAgent-Public/compaction/strategy/turnwindow"
-	"github.com/Kaelancode/kaeAgent-Public/llm"
-	"github.com/Kaelancode/kaeAgent-Public/observability"
-	"github.com/Kaelancode/kaeAgent-Public/store"
-	"github.com/Kaelancode/kaeAgent-Public/streaming"
-	"github.com/Kaelancode/kaeAgent-Public/tools"
 	"github.com/rs/zerolog"
+	agentengine "github.com/yourorg/agent-sdk/agent/internal/engine"
+	"github.com/yourorg/agent-sdk/compaction"
+	"github.com/yourorg/agent-sdk/compaction/strategy/tokenlimit"
+	"github.com/yourorg/agent-sdk/compaction/strategy/turnwindow"
+	"github.com/yourorg/agent-sdk/llm"
+	"github.com/yourorg/agent-sdk/observability"
+	"github.com/yourorg/agent-sdk/store"
+	"github.com/yourorg/agent-sdk/streaming"
+	"github.com/yourorg/agent-sdk/tools"
 )
 
 const (
@@ -150,9 +150,6 @@ func NewRuntime(cfg RuntimeConfig) *Runtime {
 	}
 	if rt.compactor == nil && cfg.Session != nil {
 		rt.compactor = defaultCompactor(cfg.Session)
-	}
-	if rt.modelContextLimit <= 0 && cfg.Session != nil {
-		rt.modelContextLimit = cfg.Session.Config.TokenBudget
 	}
 	if rt.outputReserve <= 0 {
 		rt.outputReserve = defaultOutputTokenReserve
