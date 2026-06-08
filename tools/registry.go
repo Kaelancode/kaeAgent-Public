@@ -3,9 +3,11 @@ package tools
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
-	"github.com/yourorg/agent-sdk/schema"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
 )
 
 // Registry manages tool definitions with name and tag-based lookup.
@@ -21,11 +23,25 @@ func NewRegistry() *Registry {
 	}
 }
 
-// Register adds a tool to the registry. Overwrites if a tool with the same name exists.
-func (r *Registry) Register(t ToolDef) {
+// Register adds a tool to the registry.
+func (r *Registry) Register(t ToolDef) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return fmt.Errorf("tools: tool name is required")
+	}
+	if t.Schema == nil {
+		return fmt.Errorf("tools: tool %q schema is required", t.Name)
+	}
+	if t.Handler == nil {
+		return fmt.Errorf("tools: tool %q handler is required", t.Name)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, exists := r.tools[t.Name]; exists {
+		return fmt.Errorf("tools: tool %q already registered", t.Name)
+	}
 	r.tools[t.Name] = t
+	return nil
 }
 
 // Get retrieves a tool by exact name.
@@ -42,7 +58,7 @@ func (r *Registry) ByTag(tag string) []ToolDef {
 	defer r.mu.RUnlock()
 
 	var result []ToolDef
-	for _, t := range r.tools {
+	for _, t := range sortedTools(r.tools) {
 		for _, tt := range t.Tags {
 			if tt == tag {
 				result = append(result, t)
@@ -59,7 +75,7 @@ func (r *Registry) All() []ToolDef {
 	defer r.mu.RUnlock()
 
 	result := make([]ToolDef, 0, len(r.tools))
-	for _, t := range r.tools {
+	for _, t := range sortedTools(r.tools) {
 		result = append(result, t)
 	}
 	return result
@@ -85,7 +101,7 @@ func (r *Registry) ToProviderFormat(providerName string) any {
 
 func (r *Registry) toOpenAIFormat() []map[string]any {
 	result := make([]map[string]any, 0, len(r.tools))
-	for _, t := range r.tools {
+	for _, t := range sortedTools(r.tools) {
 		params := schemaToMap(t.Schema)
 		result = append(result, map[string]any{
 			"type": "function",
@@ -101,7 +117,7 @@ func (r *Registry) toOpenAIFormat() []map[string]any {
 
 func (r *Registry) toClaudeFormat() []map[string]any {
 	result := make([]map[string]any, 0, len(r.tools))
-	for _, t := range r.tools {
+	for _, t := range sortedTools(r.tools) {
 		params := schemaToMap(t.Schema)
 		result = append(result, map[string]any{
 			"name":         t.Name,
@@ -114,7 +130,7 @@ func (r *Registry) toClaudeFormat() []map[string]any {
 
 func (r *Registry) toGeminiFormat() map[string]any {
 	decls := make([]map[string]any, 0, len(r.tools))
-	for _, t := range r.tools {
+	for _, t := range sortedTools(r.tools) {
 		params := schemaToMap(t.Schema)
 		decls = append(decls, map[string]any{
 			"name":        t.Name,
@@ -143,6 +159,7 @@ func (r *Registry) Names() []string {
 	for name := range r.tools {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
@@ -162,4 +179,17 @@ func (r *Registry) Remove(name string) error {
 	}
 	delete(r.tools, name)
 	return nil
+}
+
+func sortedTools(input map[string]ToolDef) []ToolDef {
+	names := make([]string, 0, len(input))
+	for name := range input {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]ToolDef, 0, len(names))
+	for _, name := range names {
+		out = append(out, input[name])
+	}
+	return out
 }

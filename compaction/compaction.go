@@ -3,7 +3,7 @@ package compaction
 import (
 	"context"
 
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 type Input struct {
@@ -21,6 +21,8 @@ type Output struct {
 	TokensBefore int
 	TokensAfter  int
 }
+
+const forcedCompactionReason = "forced compaction"
 
 type Compactor interface {
 	Compact(ctx context.Context, input Input) (Output, error)
@@ -55,7 +57,7 @@ func NewEngine(trigger Trigger, strategy Strategy, estimator TokenEstimator) *En
 }
 
 func (e *Engine) Compact(ctx context.Context, input Input) (Output, error) {
-	before := cloneMessages(input.Messages)
+	before := CloneMessages(input.Messages)
 	estimatedBefore := EstimatePromptTokens(before, input.Tools, e.estimator)
 
 	if e.trigger == nil || e.strategy == nil {
@@ -94,7 +96,7 @@ func (e *Engine) Compact(ctx context.Context, input Input) (Output, error) {
 }
 
 func (e *Engine) ForceCompact(ctx context.Context, input Input) (Output, error) {
-	before := cloneMessages(input.Messages)
+	before := CloneMessages(input.Messages)
 	estimatedBefore := EstimatePromptTokens(before, input.Tools, e.estimator)
 
 	if e.strategy == nil {
@@ -112,13 +114,72 @@ func (e *Engine) ForceCompact(ctx context.Context, input Input) (Output, error) 
 	if out.Messages == nil {
 		out.Messages = before
 	}
+	if out.Reason == "" {
+		out.Reason = forcedCompactionReason
+	}
 	out.TokensBefore = estimatedBefore
 	out.TokensAfter = EstimatePromptTokens(out.Messages, input.Tools, e.estimator)
 	return out, nil
 }
 
-func cloneMessages(messages []llm.Message) []llm.Message {
+func CloneMessages(messages []llm.Message) []llm.Message {
+	if messages == nil {
+		return nil
+	}
+
 	out := make([]llm.Message, len(messages))
-	copy(out, messages)
+	for i, msg := range messages {
+		out[i] = CloneMessage(msg)
+	}
 	return out
+}
+
+func CloneMessage(msg llm.Message) llm.Message {
+	out := msg
+	if len(msg.ToolCalls) > 0 {
+		out.ToolCalls = make([]llm.ToolCall, len(msg.ToolCalls))
+		for i, tc := range msg.ToolCalls {
+			out.ToolCalls[i] = llm.ToolCall{
+				ID:    tc.ID,
+				Name:  tc.Name,
+				Input: cloneMap(tc.Input),
+			}
+		}
+	}
+	return out
+}
+
+func cloneMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+
+	out := make(map[string]any, len(input))
+	for k, v := range input {
+		out[k] = cloneValue(v)
+	}
+	return out
+}
+
+func cloneSlice(input []any) []any {
+	if input == nil {
+		return nil
+	}
+
+	out := make([]any, len(input))
+	for i, v := range input {
+		out[i] = cloneValue(v)
+	}
+	return out
+}
+
+func cloneValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		return cloneMap(typed)
+	case []any:
+		return cloneSlice(typed)
+	default:
+		return typed
+	}
 }

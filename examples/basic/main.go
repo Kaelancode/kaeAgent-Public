@@ -7,15 +7,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sync"
 	"time"
 
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/examples/internal/exampleutil"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 	"github.com/joho/godotenv"
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/observability"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
 )
 
 func main() {
@@ -28,16 +26,16 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	provider, err := resolveProvider()
+	provider, err := exampleutil.SelectProvider()
 	if err != nil {
 		log.Fatalf("Failed to create provider: %v", err)
 	}
-	provider = wrapProvider(provider)
+	provider = exampleutil.WrapProvider(provider)
 	fmt.Printf("Using provider: %s\n", provider.Name())
 
 	registry := tools.NewRegistry()
 	registry.Register(tools.NewHTTPTool())
-	registry.Register(currentTimeTool())
+	registry.Register(exampleutil.CurrentTimeTool())
 	registry.Register(currentDateTool())
 	registry.Register(unixTimestampTool())
 
@@ -51,10 +49,10 @@ func main() {
 	})
 
 	session := agent.NewSession(agent.SessionConfig{
-		Model:        modelForProvider(provider.Name()),
+		Model:        exampleutil.ModelForProvider(provider.Name()),
 		SystemPrompt: "You are a helpful assistant. Use tools when needed to answer questions.",
 		MaxTokens:    4096,
-		Temperature:  float32Ptr(0.7),
+		Temperature:  exampleutil.Float32Ptr(0.7),
 		TrimStrategy: agent.TrimSlidingWindow,
 		MaxHistory:   50,
 		BudgetConfig: &streaming.BudgetConfig{
@@ -62,8 +60,6 @@ func main() {
 			MaxCostUSD: 1.00,
 		},
 	})
-
-	tracer := observability.NoopTracer{}
 
 	middleware := []agent.Middleware{
 		agent.CostGuardMiddleware(budget),
@@ -78,7 +74,6 @@ func main() {
 		MaxToolConcurrency: 2,
 		Middleware:         middleware,
 		MaxSteps:           15,
-		Tracer:             tracer,
 	})
 
 	userMsg := "Give me a UTC clock summary by calling current_time, current_date, and unix_timestamp."
@@ -97,67 +92,6 @@ func main() {
 
 	input, output, total, cost := budget.Usage()
 	fmt.Printf("\nToken usage: %d input, %d output, %d total (est. $%.4f)\n", input, output, total, cost)
-}
-
-func float32Ptr(v float32) *float32 {
-	return &v
-}
-
-func wrapProvider(provider llm.Provider) llm.Provider {
-	return llm.WrapProvider(
-		provider,
-		llm.WithRateLimit(&intervalLimiter{interval: 100 * time.Millisecond}),
-		llm.WithConcurrencyLimit(4),
-		llm.WithRetry(retryPolicy{maxAttempts: 2, backoff: 250 * time.Millisecond}),
-	)
-}
-
-func resolveProvider() (llm.Provider, error) {
-	if os.Getenv("OPENAI_API_KEY") != "" {
-		return llm.NewOpenAIProvider()
-	}
-	if os.Getenv("ANTHROPIC_API_KEY") != "" {
-		return llm.NewClaudeProvider()
-	}
-	if os.Getenv("GEMINI_API_KEY") != "" {
-		return llm.NewGeminiProvider()
-	}
-	if os.Getenv("DASHSCOPE_API_KEY") != "" {
-		return llm.NewQwenProvider()
-	}
-	return nil, fmt.Errorf("no API key found; set OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, or DASHSCOPE_API_KEY")
-}
-
-func modelForProvider(name string) string {
-	switch name {
-	case "openai":
-		return "gpt-4o"
-	case "anthropic":
-		return "claude-sonnet-4-20250514"
-	case "gcp.gemini":
-		return "gemini-1.5-pro"
-	case "qwen":
-		return "qwen-plus"
-	default:
-		return "gpt-4o"
-	}
-}
-
-func currentTimeTool() tools.ToolDef {
-	return tools.ToolDef{
-		Name:        "current_time",
-		Description: "Returns the current date and time in UTC",
-		Tags:        []string{"utility", "read-only"},
-		Handler: func(ctx context.Context, input map[string]any) (any, error) {
-			if err := simulateToolWork(ctx, "current_time"); err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"time":     time.Now().UTC().Format(time.RFC3339),
-				"timezone": "UTC",
-			}, nil
-		},
-	}
 }
 
 func currentDateTool() tools.ToolDef {
@@ -206,46 +140,4 @@ func simulateToolWork(ctx context.Context, name string) error {
 		fmt.Printf("[tool done]  %s\n", name)
 		return nil
 	}
-}
-
-type intervalLimiter struct {
-	mu       sync.Mutex
-	interval time.Duration
-	last     time.Time
-}
-
-func (l *intervalLimiter) Wait(ctx context.Context, _ *llm.Request) error {
-	for {
-		l.mu.Lock()
-		now := time.Now()
-		wait := l.interval - now.Sub(l.last)
-		if wait <= 0 {
-			l.last = now
-			l.mu.Unlock()
-			return nil
-		}
-		l.mu.Unlock()
-
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
-}
-
-type retryPolicy struct {
-	maxAttempts int
-	backoff     time.Duration
-}
-
-func (p retryPolicy) ShouldRetry(ctx context.Context, _ *llm.Request, _ error, attempt int) (time.Duration, bool) {
-	select {
-	case <-ctx.Done():
-		return 0, false
-	default:
-	}
-	return p.backoff, attempt < p.maxAttempts
 }

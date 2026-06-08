@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/observability"
+	"github.com/Kaelancode/kaeAgent-Public/observability"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -165,7 +165,7 @@ func TestProviderConfig_GRPCWithHeaders(t *testing.T) {
 		Headers:      map[string]string{"x-mlflow-experiment-id": "123"},
 		ExporterType: "grpc",
 	}
-	client, err := newOLTPClient(context.Background(), cfg)
+	client, err := newOTLPClient(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestProviderConfig_HTTPWithHeaders(t *testing.T) {
 		Headers:      map[string]string{"x-mlflow-experiment-id": "123"},
 		ExporterType: "http",
 	}
-	client, err := newOLTPClient(context.Background(), cfg)
+	client, err := newOTLPClient(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,11 +197,21 @@ func TestProviderConfig_DefaultIsGRPC(t *testing.T) {
 		ServiceName: "test-agent",
 		Insecure:    true,
 	}
-	client, err := newOLTPClient(context.Background(), cfg)
+	client, err := newOTLPClient(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if client == nil {
 		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestNewResourceReturnsResource(t *testing.T) {
+	res, err := newResource("test-agent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil resource")
 	}
 }

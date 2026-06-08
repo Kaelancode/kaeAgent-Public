@@ -3,7 +3,7 @@ package compaction
 import (
 	"context"
 
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 type MaxTurnsTrigger struct {

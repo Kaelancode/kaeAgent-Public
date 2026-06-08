@@ -3,23 +3,22 @@ package llm
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"strings"
-	"time"
+
+	"github.com/Kaelancode/kaeAgent-Public/internal/llmhttp"
+	"github.com/Kaelancode/kaeAgent-Public/internal/sse"
 )
 
 const (
-	claudeDefaultBase    = "https://api.anthropic.com/v1"
-	claudeAPIVersion     = "2023-06-01"
-	claudeMaxRetries     = 3
-	claudeInitialBackoff = 500 * time.Millisecond
+	claudeDefaultBase = "https://api.anthropic.com/v1"
+	claudeAPIVersion  = "2023-06-01"
 )
 
 // ClaudeProvider implements Provider for the Anthropic Claude API.
@@ -28,6 +27,8 @@ type ClaudeProvider struct {
 	baseURL string
 	client  *http.Client
 }
+
+var _ Provider = (*ClaudeProvider)(nil)
 
 // NewClaudeProvider creates a provider reading ANTHROPIC_API_KEY from the environment.
 func NewClaudeProvider() (*ClaudeProvider, error) {
@@ -42,7 +43,7 @@ func NewClaudeProvider() (*ClaudeProvider, error) {
 	return &ClaudeProvider{
 		apiKey:  key,
 		baseURL: base,
-		client:  &http.Client{Timeout: 120 * time.Second},
+		client:  llmhttp.NewClient(),
 	}, nil
 }
 
@@ -50,7 +51,7 @@ func (c *ClaudeProvider) Name() string { return "anthropic" }
 
 func (c *ClaudeProvider) Complete(ctx context.Context, req *Request) (*Response, error) {
 	body := c.buildRequestBody(req, false)
-	raw, err := c.doWithRetry(ctx, "/messages", body)
+	raw, err := llmhttp.DoJSONWithRetry(ctx, "claude", c.client, c.baseURL+"/messages", body, c.setRequestHeaders)
 	if err != nil {
 		return nil, fmt.Errorf("claude: complete: %w", err)
 	}
@@ -59,23 +60,13 @@ func (c *ClaudeProvider) Complete(ctx context.Context, req *Request) (*Response,
 
 func (c *ClaudeProvider) Stream(ctx context.Context, req *Request) (<-chan Event, error) {
 	body := c.buildRequestBody(req, true)
-	httpReq, err := c.newRequest(ctx, "/messages", body)
+	bodyReader, err := llmhttp.OpenSSEStream(ctx, "claude", c.client, c.baseURL+"/messages", body, c.setRequestHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("claude: stream request: %w", err)
-	}
-
-	resp, err := c.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("claude: stream do: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("claude: stream status %d: %s", resp.StatusCode, string(respBody))
+		return nil, err
 	}
 
 	ch := make(chan Event, 64)
-	go c.readSSE(ctx, resp.Body, ch)
+	go c.readSSE(ctx, bodyReader, ch)
 	return ch, nil
 }
 
@@ -162,60 +153,8 @@ func (c *ClaudeProvider) buildRequestBody(req *Request, stream bool) map[string]
 		}
 		body["tools"] = tools
 	}
-	for k, v := range req.Options {
-		body[k] = v
-	}
+	applyProviderOptions(body, req.Options, reservedOptions("model", "messages", "stream", "tools", "system"))
 	return body
-}
-
-func (c *ClaudeProvider) newRequest(ctx context.Context, path string, body map[string]any) (*http.Request, error) {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("claude: marshal: %w", err)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("claude: new request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
-	httpReq.Header.Set("anthropic-version", claudeAPIVersion)
-	return httpReq, nil
-}
-
-func (c *ClaudeProvider) doWithRetry(ctx context.Context, path string, body map[string]any) ([]byte, error) {
-	var lastErr error
-	for attempt := 0; attempt < claudeMaxRetries; attempt++ {
-		if attempt > 0 {
-			backoff := time.Duration(float64(claudeInitialBackoff) * math.Pow(2, float64(attempt-1)))
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Errorf("claude: retry cancelled: %w", ctx.Err())
-			case <-time.After(backoff):
-			}
-		}
-		httpReq, err := c.newRequest(ctx, path, body)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := c.client.Do(httpReq)
-		if err != nil {
-			lastErr = fmt.Errorf("claude: request: %w", err)
-			continue
-		}
-		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("claude: status %d: %s", resp.StatusCode, string(data))
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("claude: status %d: %s", resp.StatusCode, string(data))
-		}
-		return data, nil
-	}
-	return nil, fmt.Errorf("claude: retries exhausted: %w", lastErr)
 }
 
 func (c *ClaudeProvider) parseResponse(data []byte) (*Response, error) {
@@ -265,16 +204,28 @@ func (c *ClaudeProvider) parseResponse(data []byte) (*Response, error) {
 	return resp, nil
 }
 
+func (c *ClaudeProvider) setRequestHeaders(req *http.Request) {
+	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("anthropic-version", claudeAPIVersion)
+}
+
 func (c *ClaudeProvider) readSSE(ctx context.Context, body io.ReadCloser, ch chan<- Event) {
 	defer body.Close()
 	defer close(ch)
 
-	scanner := bufio.NewScanner(body)
+	reader := bufio.NewReader(body)
 	var eventType string
 	var sawStop bool
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, err := sse.ReadLine(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("claude: sse read: %w", err)})
+			return
+		}
 
 		if strings.HasPrefix(line, "event: ") {
 			eventType = strings.TrimPrefix(line, "event: ")
@@ -379,10 +330,6 @@ func (c *ClaudeProvider) readSSE(ctx context.Context, body io.ReadCloser, ch cha
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("claude: sse scan: %w", err)})
-		return
-	}
 	if !sawStop {
 		_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("claude: stream ended without message_stop")})
 	}

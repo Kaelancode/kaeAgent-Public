@@ -3,22 +3,21 @@ package llm
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"strings"
-	"time"
+
+	"github.com/Kaelancode/kaeAgent-Public/internal/llmhttp"
+	"github.com/Kaelancode/kaeAgent-Public/internal/sse"
 )
 
 const (
-	geminiDefaultBase    = "https://generativelanguage.googleapis.com/v1beta"
-	geminiMaxRetries     = 3
-	geminiInitialBackoff = 500 * time.Millisecond
+	geminiDefaultBase = "https://generativelanguage.googleapis.com/v1beta"
 )
 
 // GeminiProvider implements Provider for Google's Gemini API.
@@ -27,6 +26,8 @@ type GeminiProvider struct {
 	baseURL string
 	client  *http.Client
 }
+
+var _ Provider = (*GeminiProvider)(nil)
 
 // NewGeminiProvider creates a provider reading GEMINI_API_KEY from the environment.
 func NewGeminiProvider() (*GeminiProvider, error) {
@@ -41,7 +42,7 @@ func NewGeminiProvider() (*GeminiProvider, error) {
 	return &GeminiProvider{
 		apiKey:  key,
 		baseURL: base,
-		client:  &http.Client{Timeout: 120 * time.Second},
+		client:  llmhttp.NewClient(),
 	}, nil
 }
 
@@ -49,8 +50,8 @@ func (g *GeminiProvider) Name() string { return "gcp.gemini" }
 
 func (g *GeminiProvider) Complete(ctx context.Context, req *Request) (*Response, error) {
 	body := g.buildRequestBody(req)
-	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", g.baseURL, req.Model, g.apiKey)
-	raw, err := g.doWithRetry(ctx, url, body)
+	url := fmt.Sprintf("%s/models/%s:generateContent", g.baseURL, req.Model)
+	raw, err := llmhttp.DoJSONWithRetry(ctx, "gemini", g.client, url, body, g.setRequestHeaders)
 	if err != nil {
 		return nil, fmt.Errorf("gemini: complete: %w", err)
 	}
@@ -59,39 +60,24 @@ func (g *GeminiProvider) Complete(ctx context.Context, req *Request) (*Response,
 
 func (g *GeminiProvider) Stream(ctx context.Context, req *Request) (<-chan Event, error) {
 	body := g.buildRequestBody(req)
-	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s", g.baseURL, req.Model, g.apiKey)
-
-	data, err := json.Marshal(body)
+	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", g.baseURL, req.Model)
+	bodyReader, err := llmhttp.OpenSSEStream(ctx, "gemini", g.client, url, body, g.setRequestHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("gemini: stream marshal: %w", err)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("gemini: stream request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := g.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("gemini: stream do: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("gemini: stream status %d: %s", resp.StatusCode, string(respBody))
+		return nil, err
 	}
 
 	ch := make(chan Event, 64)
-	go g.readSSE(ctx, resp.Body, ch)
+	go g.readSSE(ctx, bodyReader, ch)
 	return ch, nil
 }
 
 func (g *GeminiProvider) Models(ctx context.Context) ([]ModelInfo, error) {
-	url := fmt.Sprintf("%s/models?key=%s", g.baseURL, g.apiKey)
+	url := fmt.Sprintf("%s/models", g.baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("gemini: models request: %w", err)
 	}
+	httpReq.Header.Set("x-goog-api-key", g.apiKey)
 	resp, err := g.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("gemini: models do: %w", err)
@@ -203,10 +189,10 @@ func (g *GeminiProvider) buildRequestBody(req *Request) map[string]any {
 				"parameters":  t.Parameters,
 			}
 		}
-			body["tools"] = []map[string]any{
-				{"functionDeclarations": funcDecls},
-			}
+		body["tools"] = []map[string]any{
+			{"functionDeclarations": funcDecls},
 		}
+	}
 
 	for k, v := range req.Options {
 		switch k {
@@ -241,6 +227,9 @@ func (g *GeminiProvider) buildRequestBody(req *Request) map[string]any {
 			}
 			body[k] = v
 		default:
+			if _, ok := reservedOptions("contents", "tools", "systemInstruction")[k]; ok {
+				continue
+			}
 			body[k] = v
 		}
 	}
@@ -249,48 +238,6 @@ func (g *GeminiProvider) buildRequestBody(req *Request) map[string]any {
 	}
 
 	return body
-}
-
-func (g *GeminiProvider) doWithRetry(ctx context.Context, url string, body map[string]any) ([]byte, error) {
-	var lastErr error
-	for attempt := 0; attempt < geminiMaxRetries; attempt++ {
-		if attempt > 0 {
-			backoff := time.Duration(float64(geminiInitialBackoff) * math.Pow(2, float64(attempt-1)))
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Errorf("gemini: retry cancelled: %w", ctx.Err())
-			case <-time.After(backoff):
-			}
-		}
-
-		data, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("gemini: marshal: %w", err)
-		}
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
-		if err != nil {
-			return nil, fmt.Errorf("gemini: new request: %w", err)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-
-		resp, err := g.client.Do(httpReq)
-		if err != nil {
-			lastErr = fmt.Errorf("gemini: request: %w", err)
-			continue
-		}
-		respData, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("gemini: status %d: %s", resp.StatusCode, string(respData))
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("gemini: status %d: %s", resp.StatusCode, string(respData))
-		}
-		return respData, nil
-	}
-	return nil, fmt.Errorf("gemini: retries exhausted: %w", lastErr)
 }
 
 func (g *GeminiProvider) parseResponse(data []byte) (*Response, error) {
@@ -348,13 +295,24 @@ func (g *GeminiProvider) parseResponse(data []byte) (*Response, error) {
 	return resp, nil
 }
 
+func (g *GeminiProvider) setRequestHeaders(req *http.Request) {
+	req.Header.Set("x-goog-api-key", g.apiKey)
+}
+
 func (g *GeminiProvider) readSSE(ctx context.Context, body io.ReadCloser, ch chan<- Event) {
 	defer body.Close()
 	defer close(ch)
 
-	scanner := bufio.NewScanner(body)
-	for scanner.Scan() {
-		line := scanner.Text()
+	reader := bufio.NewReader(body)
+	for {
+		line, err := sse.ReadLine(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("gemini: sse read: %w", err)})
+			return
+		}
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -416,9 +374,5 @@ func (g *GeminiProvider) readSSE(ctx context.Context, body io.ReadCloser, ch cha
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("gemini: sse scan: %w", err)})
-		return
-	}
 	_ = sendEvent(ctx, ch, Event{Kind: EventDone})
 }

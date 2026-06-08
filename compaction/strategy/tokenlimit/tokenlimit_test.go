@@ -2,10 +2,11 @@ package tokenlimit
 
 import (
 	"context"
+	"strings"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 func TestStrategy_DropsWholeTurns(t *testing.T) {
@@ -74,6 +75,30 @@ func TestStrategy_DropsWholeTurnWithToolMessages(t *testing.T) {
 	}
 	if out.Messages[1].Content != "followup" || out.Messages[2].Content != "answer" {
 		t.Fatalf("expected the tool-backed turn to be dropped as a unit, got %+v", out.Messages)
+	}
+}
+
+func TestStrategy_ErrorsWhenProtectedMessagesStillExceedLimit(t *testing.T) {
+	strategy := New(5, fixedEstimator{
+		values: map[string]int{
+			"system:large system prompt": 10,
+			"user:question":              3,
+			"assistant:answer":           3,
+		},
+	})
+
+	_, err := strategy.Compact(context.Background(), compaction.Input{
+		Messages: []llm.Message{
+			{Role: "system", Content: "large system prompt"},
+			{Role: "user", Content: "question"},
+			{Role: "assistant", Content: "answer"},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected error when protected messages exceed max tokens")
+	}
+	if !strings.Contains(err.Error(), "tokenlimit: compacted messages exceed max tokens:") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

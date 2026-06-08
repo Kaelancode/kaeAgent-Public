@@ -2,9 +2,10 @@ package tokenlimit
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 type Strategy struct {
@@ -32,8 +33,14 @@ func (s *Strategy) Compact(_ context.Context, input compaction.Input) (compactio
 		return compaction.Output{Messages: msgs}, nil
 	}
 
-	for compaction.EstimatePromptTokens(msgs, input.Tools, s.Estimator) > s.MaxTokens && hasDroppableTurns(msgs) {
+	tokens := compaction.EstimatePromptTokens(msgs, input.Tools, s.Estimator)
+	for tokens > s.MaxTokens && hasDroppableTurns(msgs) {
 		msgs = dropOldestTurn(msgs)
+		tokens = compaction.EstimatePromptTokens(msgs, input.Tools, s.Estimator)
+	}
+
+	if tokens > s.MaxTokens {
+		return compaction.Output{}, fmt.Errorf("tokenlimit: compacted messages exceed max tokens: %d > %d", tokens, s.MaxTokens)
 	}
 
 	return compaction.Output{
@@ -48,9 +55,7 @@ func Factory(config map[string]any) (compaction.Strategy, error) {
 }
 
 func cloneMessages(messages []llm.Message) []llm.Message {
-	out := make([]llm.Message, len(messages))
-	copy(out, messages)
-	return out
+	return compaction.CloneMessages(messages)
 }
 
 func hasDroppableTurns(messages []llm.Message) bool {

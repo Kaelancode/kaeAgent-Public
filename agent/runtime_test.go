@@ -5,14 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/compaction/strategy/slidingwindow"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/store"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/compaction/strategy/slidingwindow"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/observability"
+	"github.com/Kaelancode/kaeAgent-Public/store"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 type fakeProvider struct {
@@ -67,6 +69,126 @@ func (f *fakeProvider) Stream(_ context.Context, req *llm.Request) (<-chan llm.E
 }
 func (f *fakeProvider) Models(_ context.Context) ([]llm.ModelInfo, error) { return nil, nil }
 func (f *fakeProvider) Name() string                                      { return "fake" }
+
+func TestRuntime_RunBudgetFailureDoesNotAppendUserMessage(t *testing.T) {
+	session := NewSession(SessionConfig{
+		Model:        "test-model",
+		BudgetConfig: &streaming.BudgetConfig{MaxTokens: 1},
+	})
+	session.Budget.Add(2, 0)
+
+	provider := &fakeProvider{}
+	rt := NewRuntime(RuntimeConfig{
+		Provider: provider,
+		Session:  session,
+	})
+
+	_, err := rt.Run(context.Background(), "this should be rejected")
+	if err == nil {
+		t.Fatal("expected budget error")
+	}
+	if !strings.Contains(err.Error(), "budget: token limit exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(provider.requests) != 0 {
+		t.Fatalf("expected provider not to be called, got %d requests", len(provider.requests))
+	}
+	if msgs := rt.ConversationMessages(); len(msgs) != 0 {
+		t.Fatalf("expected rejected run not to append conversation messages, got %+v", msgs)
+	}
+}
+
+func TestRuntime_RunRejectsMultipleSystemMessages(t *testing.T) {
+	provider := &fakeProvider{}
+	rt := NewRuntime(RuntimeConfig{
+		Provider: provider,
+		Session:  NewSession(SessionConfig{Model: "test-model"}),
+	})
+	rt.AppendConversationMessages([]llm.Message{
+		{Role: "system", Content: "first system"},
+		{Role: "system", Content: "second system"},
+	})
+
+	_, err := rt.Run(context.Background(), "hello")
+	if err == nil {
+		t.Fatal("expected multiple system message error")
+	}
+	if !strings.Contains(err.Error(), "expected at most one system message") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(provider.requests) != 0 {
+		t.Fatalf("expected provider not to be called, got %d requests", len(provider.requests))
+	}
+}
+
+type recordedTraceEvent struct {
+	Name  string
+	Attrs map[string]string
+}
+
+type recordingTracer struct {
+	mu     sync.Mutex
+	events []recordedTraceEvent
+	attrs  []map[string]any
+}
+
+var _ observability.Tracer = (*recordingTracer)(nil)
+
+func (r *recordingTracer) StartSpan(ctx context.Context, _ string, _ map[string]string) (context.Context, observability.Span) {
+	return ctx, struct{}{}
+}
+
+func (r *recordingTracer) EndSpan(_ context.Context, _ observability.Span, _ error) {}
+
+func (r *recordingTracer) AddEvent(_ context.Context, _ observability.Span, name string, attrs map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, recordedTraceEvent{Name: name, Attrs: cloneStringMap(attrs)})
+}
+
+func (r *recordingTracer) SetSpanAttributes(_ context.Context, _ observability.Span, attrs map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attrs = append(r.attrs, cloneAnyMap(attrs))
+}
+
+func findRecordedTraceEvent(events []recordedTraceEvent, name string) (recordedTraceEvent, bool) {
+	for _, event := range events {
+		if event.Name == name {
+			return event, true
+		}
+	}
+	return recordedTraceEvent{}, false
+}
+
+func findRecordedTraceEventWhere(events []recordedTraceEvent, name string, match func(map[string]string) bool) (recordedTraceEvent, bool) {
+	for _, event := range events {
+		if event.Name == name && match(event.Attrs) {
+			return event, true
+		}
+	}
+	return recordedTraceEvent{}, false
+}
+
+func cloneAnyMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for k, v := range input {
+		out[k] = v
+	}
+	return out
+}
+
+func findRecordedAttrs(attrs []map[string]any, match func(map[string]any) bool) (map[string]any, bool) {
+	for _, attr := range attrs {
+		if match(attr) {
+			return attr, true
+		}
+	}
+	return nil, false
+}
 
 type blockingProvider struct {
 	started  chan struct{}
@@ -245,6 +367,157 @@ func TestRuntime_NewRuntimeWithoutSessionUsesDefaultSession(t *testing.T) {
 	}
 }
 
+func TestRuntime_TraceOrderingMetadataForToolBatch(t *testing.T) {
+	provider := &fakeProvider{
+		responses: []*llm.Response{
+			{
+				Content: []llm.ContentBlock{
+					{
+						Type: "tool_call",
+						ToolCall: &llm.ToolCall{
+							ID:    "call_lookup",
+							Name:  "lookup",
+							Input: map[string]any{"query": "shoes"},
+						},
+					},
+					{
+						Type: "tool_call",
+						ToolCall: &llm.ToolCall{
+							ID:    "call_price",
+							Name:  "price",
+							Input: map[string]any{"sku": "shoe-1"},
+						},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+			{
+				Content:      []llm.ContentBlock{{Type: "text", Text: "done"}},
+				FinishReason: "stop",
+			},
+		},
+	}
+	registry := tools.NewRegistry()
+	registry.Register(testToolWithHandler("lookup", func(context.Context, map[string]any) (any, error) {
+		return "lookup result", nil
+	}))
+	registry.Register(testToolWithHandler("price", func(context.Context, map[string]any) (any, error) {
+		return "price result", nil
+	}))
+	tracer := &recordingTracer{}
+	rt := NewRuntime(RuntimeConfig{
+		Provider:           provider,
+		Tools:              registry,
+		Tracer:             tracer,
+		MaxToolConcurrency: 2,
+	})
+
+	out, err := rt.Run(context.Background(), "find shoes")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("expected done, got %q", out)
+	}
+
+	if _, ok := findRecordedAttrs(tracer.attrs, func(attrs map[string]any) bool {
+		return attrs["gen_ai.operation.name"] == "chat" && attrs["gen_ai.step.index"] == 0
+	}); !ok {
+		t.Fatal("expected chat span attributes with step index 0")
+	}
+	if _, ok := findRecordedAttrs(tracer.attrs, func(attrs map[string]any) bool {
+		return attrs["gen_ai.operation.name"] == "chat" && attrs["gen_ai.step.index"] == 1
+	}); !ok {
+		t.Fatal("expected chat span attributes with step index 1")
+	}
+	if _, ok := findRecordedAttrs(tracer.attrs, func(attrs map[string]any) bool {
+		return attrs["gen_ai.operation.name"] == "execute_tool" &&
+			attrs["gen_ai.step.index"] == 0 &&
+			attrs["gen_ai.tool.index"] == 0 &&
+			attrs["gen_ai.execution.mode"] == "parallel"
+	}); !ok {
+		t.Fatal("expected first tool span ordering attributes")
+	}
+	if _, ok := findRecordedAttrs(tracer.attrs, func(attrs map[string]any) bool {
+		groupID, _ := attrs["gen_ai.execution.group.id"].(string)
+		return attrs["gen_ai.operation.name"] == "execute_tool" &&
+			attrs["gen_ai.step.index"] == 0 &&
+			attrs["gen_ai.tool.index"] == 1 &&
+			groupID != ""
+	}); !ok {
+		t.Fatal("expected second tool span ordering attributes")
+	}
+	if _, ok := findRecordedTraceEventWhere(tracer.events, "agent.step.started", func(attrs map[string]string) bool {
+		return attrs["gen_ai.step.index"] == "0"
+	}); !ok {
+		t.Fatal("expected ordered step start event")
+	}
+	if _, ok := findRecordedTraceEventWhere(tracer.events, "agent.step.completed", func(attrs map[string]string) bool {
+		return attrs["gen_ai.step.index"] == "0" && attrs["tool_calls"] == "2" && attrs["status"] == "ok"
+	}); !ok {
+		t.Fatal("expected ordered step complete event")
+	}
+	if _, ok := findRecordedTraceEventWhere(tracer.events, "agent.tool.started", func(attrs map[string]string) bool {
+		return attrs["gen_ai.step.index"] == "0" && attrs["gen_ai.tool.index"] == "0" && attrs["gen_ai.tool.name"] == "lookup"
+	}); !ok {
+		t.Fatal("expected ordered tool start event")
+	}
+	if _, ok := findRecordedTraceEventWhere(tracer.events, "agent.tool.completed", func(attrs map[string]string) bool {
+		return attrs["gen_ai.step.index"] == "0" && attrs["gen_ai.tool.index"] == "1" && attrs["gen_ai.tool.name"] == "price" && attrs["status"] == "ok"
+	}); !ok {
+		t.Fatal("expected ordered tool complete event")
+	}
+}
+
+func TestRuntime_TraceExecutionModeSequentialForSingleToolBatch(t *testing.T) {
+	provider := &fakeProvider{
+		responses: []*llm.Response{
+			{
+				Content: []llm.ContentBlock{
+					{
+						Type: "tool_call",
+						ToolCall: &llm.ToolCall{
+							ID:    "call_lookup",
+							Name:  "lookup",
+							Input: map[string]any{"query": "shoes"},
+						},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+			{
+				Content:      []llm.ContentBlock{{Type: "text", Text: "done"}},
+				FinishReason: "stop",
+			},
+		},
+	}
+	registry := tools.NewRegistry()
+	registry.Register(testToolWithHandler("lookup", func(context.Context, map[string]any) (any, error) {
+		return "lookup result", nil
+	}))
+	tracer := &recordingTracer{}
+	rt := NewRuntime(RuntimeConfig{
+		Provider:           provider,
+		Tools:              registry,
+		Tracer:             tracer,
+		MaxToolConcurrency: 2,
+	})
+
+	out, err := rt.Run(context.Background(), "find shoes")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("expected done, got %q", out)
+	}
+	if _, ok := findRecordedAttrs(tracer.attrs, func(attrs map[string]any) bool {
+		return attrs["gen_ai.operation.name"] == "execute_tool" &&
+			attrs["gen_ai.execution.mode"] == "sequential"
+	}); !ok {
+		t.Fatal("expected single-tool batch to trace sequential execution mode")
+	}
+}
+
 func TestRuntime_RunContinuesAfterModelDrivenTransfer(t *testing.T) {
 	provider := &fakeProvider{
 		responses: []*llm.Response{
@@ -284,22 +557,24 @@ func TestRuntime_RunContinuesAfterModelDrivenTransfer(t *testing.T) {
 		Subagents:    []string{"billing"},
 		BudgetConfig: &streaming.BudgetConfig{MaxTokens: 1000},
 	})
-	root.RegisterTool(tools.ToolDef{Name: "root_tool"})
+	root.RegisterTool(testTool("root_tool"))
 	billing := NewAgent(AgentConfig{
 		Name:         "billing",
 		Model:        "billing-model",
 		SystemPrompt: "billing system",
 		BudgetConfig: &streaming.BudgetConfig{MaxTokens: 20},
 	})
-	billing.RegisterTool(tools.ToolDef{Name: "billing_tool"})
+	billing.RegisterTool(testTool("billing_tool"))
 	resolver := NewRegistry()
 	resolver.Register(root)
 	resolver.Register(billing)
+	tracer := &recordingTracer{}
 
 	rt := NewRuntime(RuntimeConfig{
 		Provider:         provider,
 		Agent:            root,
 		SubagentResolver: resolver,
+		Tracer:           tracer,
 	})
 
 	out, err := rt.Run(context.Background(), "I need a refund")
@@ -335,6 +610,16 @@ func TestRuntime_RunContinuesAfterModelDrivenTransfer(t *testing.T) {
 	}
 	if got := provider.requests[1].Execution.Metadata["priority"]; got != "high" {
 		t.Fatalf("expected transfer metadata priority=high, got %q", got)
+	}
+	transferEvent, ok := findRecordedTraceEvent(tracer.events, "gen_ai.agent.transfer")
+	if !ok {
+		t.Fatal("expected transfer trace event")
+	}
+	if got := transferEvent.Attrs["gen_ai.handoff.from_agent"]; got != "root" {
+		t.Fatalf("expected transfer from_agent root, got %q", got)
+	}
+	if got := transferEvent.Attrs["gen_ai.handoff.to_agent"]; got != "billing" {
+		t.Fatalf("expected transfer to_agent billing, got %q", got)
 	}
 	lastMsg := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
 	if lastMsg.Role != "user" || lastMsg.Content != "Handle the refund and ask for the invoice ID." {
@@ -701,7 +986,7 @@ func TestRuntime_ModelDrivenTransferRejectsMixedToolCalls(t *testing.T) {
 
 	root := NewAgent(AgentConfig{Name: "root", Model: "root-model", Subagents: []string{"billing"}})
 	billing := NewAgent(AgentConfig{Name: "billing", Model: "billing-model"})
-	root.RegisterTool(tools.ToolDef{Name: "lookup"})
+	root.RegisterTool(testTool("lookup"))
 	resolver := NewRegistry()
 	resolver.Register(root)
 	resolver.Register(billing)
@@ -892,6 +1177,65 @@ func TestRuntime_BuildRequestIncludesExecutionContext(t *testing.T) {
 	}
 }
 
+func TestRuntime_ExecuteStepDelegatesRequestShapeToEngine(t *testing.T) {
+	session := NewSession(SessionConfig{
+		Model:       "fake-model",
+		MaxTokens:   100,
+		Temperature: float32Ptr(0),
+	})
+	session.Metadata["source"] = "test"
+	provider := &fakeProvider{
+		responses: []*llm.Response{
+			{Content: []llm.ContentBlock{{Type: "text", Text: "done"}}},
+		},
+	}
+
+	rt := NewRuntime(RuntimeConfig{
+		Provider: provider,
+		Session:  session,
+		UserID:   "user-1",
+		AgentID:  "agent-1",
+	})
+	exec := rt.newRunExecutor()
+	step := &Step{
+		SessionID:  session.ID,
+		RunID:      exec.rs.runID,
+		StepIndex:  4,
+		Messages:   []llm.Message{{Role: "user", Content: "hello"}},
+		UserID:     "user-1",
+		AgentID:    "agent-1",
+		AgentName:  "agent-1",
+		AvailTools: []tools.ToolDef{testTool("lookup")},
+	}
+	expected := exec.buildRequest(step.Messages, step.AvailTools, step.StepIndex)
+
+	if _, err := exec.executeStep(context.Background(), step); err != nil {
+		t.Fatalf("executeStep: %v", err)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected one provider request, got %d", len(provider.requests))
+	}
+	got := provider.requests[0]
+	if got.Model != expected.Model || got.MaxTokens != expected.MaxTokens {
+		t.Fatalf("unexpected request config: got %+v want %+v", got, expected)
+	}
+	if got.Temperature == nil || expected.Temperature == nil || *got.Temperature != *expected.Temperature {
+		t.Fatalf("unexpected temperature: got %#v want %#v", got.Temperature, expected.Temperature)
+	}
+	if got.Execution == nil || got.Execution.SessionID != expected.Execution.SessionID || got.Execution.UserID != "user-1" || got.Execution.AgentID != "agent-1" || got.Execution.StepIndex != 4 {
+		t.Fatalf("unexpected execution context: got %+v want %+v", got.Execution, expected.Execution)
+	}
+	if got.Execution.Metadata["source"] != "test" {
+		t.Fatalf("unexpected metadata: %+v", got.Execution.Metadata)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].Content != "hello" {
+		t.Fatalf("unexpected messages: %+v", got.Messages)
+	}
+	if names := toolNames(got.Tools); !containsString(names, "lookup") {
+		t.Fatalf("expected lookup tool in request, got %v", names)
+	}
+}
+
 func float32Ptr(v float32) *float32 {
 	return &v
 }
@@ -922,12 +1266,9 @@ func TestRuntime_WithToolCall(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	registry.Register(tools.ToolDef{
-		Name: "greet",
-		Handler: func(_ context.Context, input map[string]any) (any, error) {
-			return "Hello, " + input["name"].(string) + "!", nil
-		},
-	})
+	registry.Register(testToolWithHandler("greet", func(_ context.Context, input map[string]any) (any, error) {
+		return "Hello, " + input["name"].(string) + "!", nil
+	}))
 
 	session := NewSession(SessionConfig{Model: "fake-model", MaxTokens: 100})
 	rt := NewRuntime(RuntimeConfig{
@@ -971,12 +1312,9 @@ func TestRuntime_MaxSteps(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	registry.Register(tools.ToolDef{
-		Name: "loop",
-		Handler: func(_ context.Context, _ map[string]any) (any, error) {
-			return "looping", nil
-		},
-	})
+	registry.Register(testToolWithHandler("loop", func(_ context.Context, _ map[string]any) (any, error) {
+		return "looping", nil
+	}))
 
 	session := NewSession(SessionConfig{Model: "fake-model"})
 	rt := NewRuntime(RuntimeConfig{

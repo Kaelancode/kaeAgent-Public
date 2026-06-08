@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yourorg/agent-sdk/schema"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
 )
 
 // NewHTTPTool creates a built-in tool that performs HTTP requests.

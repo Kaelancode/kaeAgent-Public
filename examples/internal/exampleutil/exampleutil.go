@@ -10,12 +10,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/observability"
+	oteltracer "github.com/Kaelancode/kaeAgent-Public/observability/otel"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 	"github.com/rs/zerolog"
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/observability"
-	oteltracer "github.com/yourorg/agent-sdk/observability/otel"
-	"github.com/yourorg/agent-sdk/streaming"
 )
 
 type SwitchableTracer struct {
@@ -189,6 +190,47 @@ func SetupMLflowTracer(ctx context.Context) (observability.Tracer, func(), error
 	return oteltracer.NewTracer(tp, serviceName), shutdown, nil
 }
 
+func SetupJaegerTracer(ctx context.Context) (observability.Tracer, func(), error) {
+	endpoint := EnvOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317")
+	serviceName := EnvOrDefault("OTEL_SERVICE_NAME", "agent-sdk")
+	fmt.Printf("Tracing to Jaeger (OTLP gRPC): %s\n", endpoint)
+
+	tp, shutdown, err := oteltracer.NewTracerProvider(ctx, oteltracer.ProviderConfig{
+		Endpoint:     endpoint,
+		ServiceName:  serviceName,
+		Insecure:     true,
+		ExporterType: "grpc",
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating Jaeger tracer provider: %w", err)
+	}
+
+	return oteltracer.NewTracer(tp, serviceName), shutdown, nil
+}
+
+func SetupStdoutTracer() (observability.Tracer, func(), error) {
+	fmt.Println("Tracing to stdout")
+	return observability.NewStdoutTracer(os.Stderr), func() {}, nil
+}
+
+func SetupTracerFromEnv(ctx context.Context) (observability.Tracer, func(), error) {
+	switch strings.ToLower(os.Getenv("TRACE_BACKEND")) {
+	case "jaeger":
+		return SetupJaegerTracer(ctx)
+	case "langfuse":
+		return SetupLangfuseTracer(ctx)
+	case "mlflow":
+		return SetupMLflowTracer(ctx)
+	case "opik":
+		return SetupOpikTracer(ctx)
+	case "stdout":
+		return SetupStdoutTracer()
+	default:
+		fmt.Println("TRACE_BACKEND not set — using NoopTracer. Set TRACE_BACKEND=jaeger|langfuse|mlflow|opik|stdout")
+		return observability.NoopTracer{}, func() {}, nil
+	}
+}
+
 func SetupOpikTracer(ctx context.Context) (observability.Tracer, func(), error) {
 	endpoint := envOrDefault("OPIK_ENDPOINT", "www.comet.com")
 	urlPath := envOrDefault("OPIK_URL_PATH", "/opik/api/v1/private/otel/v1/traces")
@@ -274,21 +316,53 @@ func ParseLogLevel(level string) zerolog.Level {
 	}
 }
 
-func envOrDefault(key, fallback string) string {
+func EnvOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
 }
 
-func HandleCommonCommand(input string, rt *agent.Runtime, budget *streaming.Budget, tracer *SwitchableTracer, registry agent.SubagentResolver, rootAgent string) bool {
+func envOrDefault(key, fallback string) string {
+	return EnvOrDefault(key, fallback)
+}
+
+func NewLogger() zerolog.Logger {
+	return zerolog.New(os.Stderr).Level(ParseLogLevel(os.Getenv("LOG_LEVEL"))).With().Timestamp().Logger()
+}
+
+func CurrentTimeTool() tools.ToolDef {
+	return tools.ToolDef{
+		Name:        "current_time",
+		Description: "Returns the current date and time in UTC",
+		Tags:        []string{"utility", "read-only"},
+		Handler: func(ctx context.Context, input map[string]any) (any, error) {
+			return map[string]any{
+				"time":     time.Now().UTC().Format(time.RFC3339),
+				"timezone": "UTC",
+			}, nil
+		},
+	}
+}
+
+func IsQuitCommand(input string) bool {
 	switch input {
 	case "/quit", "/exit", "/q":
+		return true
+	default:
+		return false
+	}
+}
+
+func HandleCommonCommand(input string, rt *agent.Runtime, budget *streaming.Budget, tracer *SwitchableTracer, registry agent.SubagentResolver, rootAgent string) bool {
+	if IsQuitCommand(input) {
 		in, out, total, cost := budget.Usage()
 		fmt.Printf("\nSession stats: %d input, %d output, %d total tokens (est. $%.4f)\n", in, out, total, cost)
 		fmt.Println("Goodbye.")
-		os.Exit(0)
 		return true
+	}
+
+	switch input {
 	case "/usage":
 		in, out, total, cost := budget.Usage()
 		remTokens, remCost := budget.Remaining()

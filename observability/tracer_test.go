@@ -111,6 +111,24 @@ func TestStdoutTracer_NestedSpans(t *testing.T) {
 	}
 }
 
+func TestStdoutTracer_StartSpanCopiesAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	tracer := NewStdoutTracer(&buf)
+	attrs := map[string]string{"session_id": "original"}
+
+	_, span := tracer.StartSpan(context.Background(), "agent.step", attrs)
+	attrs["session_id"] = "mutated"
+	attrs["new_key"] = "unexpected"
+
+	got := span.(*stdoutSpan)
+	if got.attrs["session_id"] != "original" {
+		t.Fatalf("expected copied session_id to remain original, got %q", got.attrs["session_id"])
+	}
+	if _, exists := got.attrs["new_key"]; exists {
+		t.Fatalf("expected copied attrs to exclude later mutation, got %#v", got.attrs)
+	}
+}
+
 func TestStdoutTracer_ImplementsInterface(t *testing.T) {
 	var _ Tracer = &StdoutTracer{}
 }

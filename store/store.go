@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 type ConversationStore interface {

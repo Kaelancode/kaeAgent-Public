@@ -5,17 +5,16 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/multiagent"
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/workflow"
 )
 
 func main() {
 	ctx := context.Background()
 	provider := workflowProvider{}
 
-	router := multiagent.NewRouter()
-	router.Register(multiagent.AgentConfig{
+	outlineTool := workflow.WorkflowAgentTool(workflow.AgentConfig{
 		Agent: agent.NewAgent(agent.AgentConfig{
 			Name:         "outline",
 			Model:        "workflow-demo",
@@ -25,8 +24,8 @@ func main() {
 		Name:        "outline",
 		Description: "Create a compact outline for a writing task.",
 		Tags:        []string{"workflow", "writing"},
-	})
-	router.Register(multiagent.AgentConfig{
+	}, provider)
+	expandTool := workflow.WorkflowAgentTool(workflow.AgentConfig{
 		Agent: agent.NewAgent(agent.AgentConfig{
 			Name:         "expand",
 			Model:        "workflow-demo",
@@ -36,13 +35,7 @@ func main() {
 		Name:        "expand",
 		Description: "Expand an outline into short prose.",
 		Tags:        []string{"workflow", "writing"},
-	})
-
-	orch := multiagent.NewOrchestrator(provider, router)
-	orch.RegisterWorkflowAgentTools()
-
-	outlineTool, _ := orch.ToolRegistry().Get("agent_outline")
-	expandTool, _ := orch.ToolRegistry().Get("agent_expand")
+	}, provider)
 
 	task := "Write a detailed launch note for a new workflow API."
 	outline, err := outlineTool.Handler(ctx, map[string]any{"message": task})

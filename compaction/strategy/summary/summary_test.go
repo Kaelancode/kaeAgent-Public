@@ -4,9 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 func TestStrategy_SummarizesOlderTurnsAndKeepsRecentTurns(t *testing.T) {
@@ -77,6 +78,23 @@ func TestStrategy_DefaultSummarizerIncludesToolTurnContent(t *testing.T) {
 	}
 	if out.Messages[2].Content != "latest" || out.Messages[3].Content != "current" {
 		t.Fatalf("expected latest turn to remain intact, got %+v", out.Messages)
+	}
+}
+
+func TestRoleLabel_TitleCasesCustomRole(t *testing.T) {
+	label := roleLabel(llm.Message{Role: "developer"})
+	if label != "Developer:" {
+		t.Fatalf("expected title-cased custom role, got %q", label)
+	}
+}
+
+func TestTruncate_IsRuneSafe(t *testing.T) {
+	out := truncate("你好世界abcdef", 5)
+	if !utf8.ValidString(out) {
+		t.Fatalf("expected valid UTF-8, got %q", out)
+	}
+	if out != "你好..." {
+		t.Fatalf("expected rune-safe truncation with ellipsis, got %q", out)
 	}
 }
 

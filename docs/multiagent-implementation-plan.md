@@ -1,5 +1,20 @@
 # Multi-Agent Implementation Plan
 
+## Current Status
+
+The core plan is implemented:
+
+- `agent.Agent` owns tools and declared subagents
+- model-driven consult and transfer run through `Runtime.Run` and `Runtime.Stream`
+- consult remains agent-as-tool and transfer changes reply ownership
+- active-agent metadata is session-scoped
+- transfer can continue in the same engine-driven turn
+- deterministic agent steps live in `workflow`
+- `multiagent` remains a compatibility/router/discovery layer
+- consult, transfer, streaming, persistence, tracing, and examples are test-covered
+
+Swarm orchestration remains a future, separate coordinator/task layer.
+
 This document describes the incremental implementation plan for moving the SDK's multi-agent layer to the intended architecture.
 
 ## Target Outcome
@@ -64,7 +79,8 @@ Files:
 
 - `agent/agent.go` (new)
 - `agent/runtime.go`
-- `agent/runtime_executor.go`
+- `agent/runtime_engine_turn.go`
+- `agent/runtime_subagent.go`
 - related examples/tests
 
 Tasks:
@@ -216,15 +232,16 @@ Keep deterministic workflow-invoked agent steps separate from model-driven consu
 
 Files:
 
+- `workflow/workflow.go`
 - `multiagent/orchestrator.go`
 
 Tasks:
 
-- Expose `WorkflowAgentTool(...)` for application/workflow-owned agent invocation.
-- Keep `AgentTool(...)` only as a deprecated compatibility wrapper.
+- Expose `workflow.WorkflowAgentTool(...)` for application/workflow-owned agent invocation.
+- Keep `multiagent.AgentTool(...)` only as a deprecated compatibility wrapper.
 - Ensure workflow-wrapped agent execution remains ephemeral and isolated.
 - Keep model-driven agent delegation on the core runtime's `consult_<subagent>` synthetic tools.
-- Document that `multiagent.Router.Register(...)` is for workflow/tag/compatibility registration, not the normal model-driven `Runtime.Run` subagent setup.
+- Document that `multiagent.Router.Register(...)` is for tag/compatibility registration, not the normal model-driven `Runtime.Run` subagent setup.
 - Document that `Orchestrator.Consult(...)` and `Orchestrator.Transfer(...)` are API-driven helpers where application code has already selected the target agent.
 
 ### Expected Result

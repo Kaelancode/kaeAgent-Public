@@ -43,7 +43,7 @@ func NewTracerProvider(ctx context.Context, cfg ProviderConfig) (*sdktrace.Trace
 	}
 
 	cfg.Headers = mergeAuthHeader(cfg.Headers, cfg.Username, cfg.Password)
-	client, err := newOLTPClient(ctx, cfg)
+	client, err := newOTLPClient(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -53,9 +53,14 @@ func NewTracerProvider(ctx context.Context, cfg ProviderConfig) (*sdktrace.Trace
 		return nil, nil, fmt.Errorf("creating OTLP exporter: %w", err)
 	}
 
+	res, err := newResource(cfg.ServiceName)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
-		sdktrace.WithResource(newResource(cfg.ServiceName)),
+		sdktrace.WithResource(res),
 	)
 
 	otel.SetTracerProvider(tp)
@@ -69,7 +74,7 @@ func NewTracerProvider(ctx context.Context, cfg ProviderConfig) (*sdktrace.Trace
 	return tp, shutdown, nil
 }
 
-func newOLTPClient(ctx context.Context, cfg ProviderConfig) (otlptrace.Client, error) {
+func newOTLPClient(ctx context.Context, cfg ProviderConfig) (otlptrace.Client, error) {
 	switch strings.ToLower(cfg.ExporterType) {
 	case "http", "https":
 		return newHTTPClient(ctx, cfg)
@@ -111,15 +116,18 @@ func newHTTPClient(ctx context.Context, cfg ProviderConfig) (otlptrace.Client, e
 	return client, nil
 }
 
-func newResource(serviceName string) *resource.Resource {
-	r, _ := resource.Merge(
+func newResource(serviceName string) (*resource.Resource, error) {
+	r, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(
-			semconv.SchemaURL,
+			"",
 			semconv.ServiceNameKey.String(serviceName),
 		),
 	)
-	return r
+	if err != nil {
+		return nil, fmt.Errorf("creating OTLP resource: %w", err)
+	}
+	return r, nil
 }
 
 func mergeAuthHeader(headers map[string]string, username, password string) map[string]string {

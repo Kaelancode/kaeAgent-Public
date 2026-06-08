@@ -122,3 +122,41 @@ func TestRunner_ContextCancellation(t *testing.T) {
 		t.Fatal("expected context cancellation error")
 	}
 }
+
+func TestRunner_PrefersReadyEventOverCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ch := make(chan Event, 1)
+	ch <- Event{Kind: EventDone}
+
+	dispatched := false
+	runner := NewRunner()
+	runner.On("collector", func(e Event) error {
+		dispatched = true
+		return nil
+	})
+
+	if err := runner.Run(ctx, ch); err != nil {
+		t.Fatalf("expected ready EventDone to be delivered before cancellation, got %v", err)
+	}
+	if !dispatched {
+		t.Fatal("expected ready event to be dispatched")
+	}
+}
+
+func TestCollectPrefersReadyEventOverCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ch := make(chan Event, 1)
+	ch <- Event{Kind: EventDone}
+
+	events, err := Collect(ctx, ch)
+	if err != nil {
+		t.Fatalf("expected ready EventDone to be collected before cancellation, got %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != EventDone {
+		t.Fatalf("expected collected EventDone, got %#v", events)
+	}
+}

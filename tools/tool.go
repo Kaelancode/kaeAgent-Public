@@ -4,7 +4,7 @@ package tools
 import (
 	"context"
 
-	"github.com/yourorg/agent-sdk/schema"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
 )
 
 // ToolDef describes a callable tool with its schema, tags, and handler.

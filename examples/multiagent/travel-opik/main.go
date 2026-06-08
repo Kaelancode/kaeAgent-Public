@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/examples/internal/exampleutil"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/examples/multiagent/internal/exampleutil"
-	"github.com/yourorg/agent-sdk/schema"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
 )
 
 func main() {
@@ -142,6 +142,9 @@ func main() {
 			continue
 		}
 		if handleCommand(input, rt, budget) {
+			if exampleutil.IsQuitCommand(input) {
+				break
+			}
 			continue
 		}
 
@@ -160,13 +163,14 @@ func main() {
 }
 
 func handleCommand(input string, rt *agent.Runtime, budget *streaming.Budget) bool {
-	switch input {
-	case "/quit", "/exit", "/q":
+	if exampleutil.IsQuitCommand(input) {
 		in, out, total, cost := budget.Usage()
 		fmt.Printf("\nSession stats: %d input, %d output, %d total tokens (est. $%.4f)\n", in, out, total, cost)
 		fmt.Println("Goodbye.")
-		os.Exit(0)
 		return true
+	}
+
+	switch input {
 	case "/usage":
 		in, out, total, cost := budget.Usage()
 		remTokens, remCost := budget.Remaining()
@@ -209,15 +213,15 @@ func destinationInfoTool() tools.ToolDef {
 			Required: []string{"destination"},
 			Properties: map[string]*schema.Schema{
 				"destination": {Type: "string", Description: "City or region name."},
-				"interests":  {Type: "string", Description: "Travel interests, for example history, food, nature."},
+				"interests":   {Type: "string", Description: "Travel interests, for example history, food, nature."},
 			},
 		},
 		Handler: func(ctx context.Context, input map[string]any) (any, error) {
 			return map[string]any{
-				"destination":   input["destination"],
+				"destination":     input["destination"],
 				"top_attractions": []string{"historic temples", "local food markets", "scenic gardens", "cultural museums"},
-				"best_time":     "March-May and October-November",
-				"local_tips":    "Carry cash for small shops, remove shoes in temples, learn basic greetings.",
+				"best_time":       "March-May and October-November",
+				"local_tips":      "Carry cash for small shops, remove shoes in temples, learn basic greetings.",
 			}, nil
 		},
 	}
@@ -237,11 +241,11 @@ func weatherForecastTool() tools.ToolDef {
 		},
 		Handler: func(ctx context.Context, input map[string]any) (any, error) {
 			return map[string]any{
-				"destination":   input["destination"],
-				"period":        input["month"],
-				"avg_temp_c":    15,
-				"conditions":    "mild, occasional rain, cherry blossom season",
-				"packing_tip":   "Layered clothing, light rain jacket, comfortable walking shoes.",
+				"destination": input["destination"],
+				"period":      input["month"],
+				"avg_temp_c":  15,
+				"conditions":  "mild, occasional rain, cherry blossom season",
+				"packing_tip": "Layered clothing, light rain jacket, comfortable walking shoes.",
 			}, nil
 		},
 	}
@@ -262,12 +266,12 @@ func visaRequirementsTool() tools.ToolDef {
 		},
 		Handler: func(ctx context.Context, input map[string]any) (any, error) {
 			return map[string]any{
-				"destination":      input["destination"],
-				"passport_from":    input["passport_from"],
-				"visa_required":    false,
-				"max_stay_days":    90,
-				"entry_note":       "Ensure passport validity exceeds 6 months from entry date.",
-				"purpose":          input["purpose"],
+				"destination":   input["destination"],
+				"passport_from": input["passport_from"],
+				"visa_required": false,
+				"max_stay_days": 90,
+				"entry_note":    "Ensure passport validity exceeds 6 months from entry date.",
+				"purpose":       input["purpose"],
 			}, nil
 		},
 	}
@@ -283,17 +287,17 @@ func flightSearchTool() tools.ToolDef {
 			Properties: map[string]*schema.Schema{
 				"origin":      {Type: "string", Description: "Departure city or airport code."},
 				"destination": {Type: "string", Description: "Arrival city or airport code."},
-				"date":         {Type: "string", Description: "Travel date or date range."},
-				"flexible":     {Type: "boolean", Description: "Whether dates are flexible (±3 days)."},
+				"date":        {Type: "string", Description: "Travel date or date range."},
+				"flexible":    {Type: "boolean", Description: "Whether dates are flexible (±3 days)."},
 			},
 		},
 		Handler: func(ctx context.Context, input map[string]any) (any, error) {
 			return map[string]any{
-				"origin":          input["origin"],
-				"destination":     input["destination"],
-				"date":            input["date"],
-				"best_option":     "Direct flight, 12h total, $850 round-trip",
-				"budget_option":   "1 stop, 16h total, $560 round-trip",
+				"origin":           input["origin"],
+				"destination":      input["destination"],
+				"date":             input["date"],
+				"best_option":      "Direct flight, 12h total, $850 round-trip",
+				"budget_option":    "1 stop, 16h total, $560 round-trip",
 				"booking_deadline": "Book 6-8 weeks ahead for best fares.",
 			}, nil
 		},
@@ -316,11 +320,11 @@ func hotelSearchTool() tools.ToolDef {
 		},
 		Handler: func(ctx context.Context, input map[string]any) (any, error) {
 			return map[string]any{
-				"destination":   input["destination"],
-				"nights":        input["nights"],
-				"mid_range":     "$120-180/night, central district, walking distance to transit",
-				"luxury":        "$280-400/night, boutique hotel, on-site onsen",
-				"budget_stay":   "$60-90/night, guesthouse, shared bath",
+				"destination": input["destination"],
+				"nights":      input["nights"],
+				"mid_range":   "$120-180/night, central district, walking distance to transit",
+				"luxury":      "$280-400/night, boutique hotel, on-site onsen",
+				"budget_stay": "$60-90/night, guesthouse, shared bath",
 			}, nil
 		},
 	}
@@ -334,7 +338,7 @@ func itineraryEstimateTool() tools.ToolDef {
 			Type:     "object",
 			Required: []string{"destination", "days"},
 			Properties: map[string]*schema.Schema{
-				"destination":  {Type: "string", Description: "Trip destination."},
+				"destination": {Type: "string", Description: "Trip destination."},
 				"days":        {Type: "number", Description: "Number of trip days."},
 				"style":       {Type: "string", Description: "Travel style: budget, mid-range, luxury."},
 				"origin":      {Type: "string", Description: "Departure city for flight estimate."},
@@ -346,11 +350,11 @@ func itineraryEstimateTool() tools.ToolDef {
 				"days":            input["days"],
 				"estimated_total": "$2,200-3,000 per person (mid-range)",
 				"breakdown": map[string]string{
-					"flights":     "$850 round-trip",
+					"flights":       "$850 round-trip",
 					"accommodation": "$150/night × 5",
-					"activities":  "$40-80/day",
-					"food":        "$40-60/day",
-					"transport":   "$15-25/day",
+					"activities":    "$40-80/day",
+					"food":          "$40-60/day",
+					"transport":     "$15-25/day",
 				},
 				"tip": "Book 2 months ahead for best rates; consider a rail pass for day trips.",
 			}, nil

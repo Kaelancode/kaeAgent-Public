@@ -1,12 +1,12 @@
-package agent
+package streaming
 
 import (
 	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 type toolCallAccum struct {
@@ -15,18 +15,18 @@ type toolCallAccum struct {
 	input strings.Builder
 }
 
-type toolCallAssembler struct {
+type ToolCallAssembler struct {
 	accumulators map[int]*toolCallAccum
 	order        []int
 }
 
-func newToolCallAssembler() *toolCallAssembler {
-	return &toolCallAssembler{
+func NewToolCallAssembler() *ToolCallAssembler {
+	return &ToolCallAssembler{
 		accumulators: make(map[int]*toolCallAccum),
 	}
 }
 
-func (a *toolCallAssembler) addFragment(idx int, delta *llm.ToolCallDelta) {
+func (a *ToolCallAssembler) AddFragment(idx int, delta *llm.ToolCallDelta) {
 	acc, ok := a.accumulators[idx]
 	if !ok {
 		acc = &toolCallAccum{}
@@ -44,7 +44,7 @@ func (a *toolCallAssembler) addFragment(idx int, delta *llm.ToolCallDelta) {
 	}
 }
 
-func (a *toolCallAssembler) assemble() ([]tools.ToolCall, error) {
+func (a *ToolCallAssembler) Assemble() ([]tools.ToolCall, error) {
 	if len(a.order) == 0 {
 		return nil, nil
 	}
@@ -75,7 +75,7 @@ func (a *toolCallAssembler) assemble() ([]tools.ToolCall, error) {
 	return calls, nil
 }
 
-func (a *toolCallAssembler) reset() {
+func (a *ToolCallAssembler) Reset() {
 	a.accumulators = make(map[int]*toolCallAccum)
 	a.order = nil
 }

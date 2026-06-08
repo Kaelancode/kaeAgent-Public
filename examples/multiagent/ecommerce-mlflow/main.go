@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/examples/internal/exampleutil"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/examples/multiagent/internal/exampleutil"
-	"github.com/yourorg/agent-sdk/schema"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
 )
 
 func main() {
@@ -140,6 +140,9 @@ func main() {
 			continue
 		}
 		if handleCommand(input, rt, budget) {
+			if exampleutil.IsQuitCommand(input) {
+				break
+			}
 			continue
 		}
 
@@ -158,13 +161,14 @@ func main() {
 }
 
 func handleCommand(input string, rt *agent.Runtime, budget *streaming.Budget) bool {
-	switch input {
-	case "/quit", "/exit", "/q":
+	if exampleutil.IsQuitCommand(input) {
 		in, out, total, cost := budget.Usage()
 		fmt.Printf("\nSession stats: %d input, %d output, %d total tokens (est. $%.4f)\n", in, out, total, cost)
 		fmt.Println("Goodbye.")
-		os.Exit(0)
 		return true
+	}
+
+	switch input {
 	case "/usage":
 		in, out, total, cost := budget.Usage()
 		remTokens, remCost := budget.Remaining()

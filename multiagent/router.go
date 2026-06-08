@@ -3,13 +3,14 @@ package multiagent
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 
-	"github.com/yourorg/agent-sdk/agent"
+	"github.com/Kaelancode/kaeAgent-Public/agent"
 )
 
 // AgentConfig describes a registered agent capability for the multiagent
-// workflow/compatibility layer. For model-driven consult/transfer in normal
+// compatibility/discovery layer. For model-driven consult/transfer in normal
 // Runtime.Run usage, prefer agent.Agent plus agent.Registry directly.
 type AgentConfig struct {
 	Agent        *agent.Agent
@@ -136,6 +137,7 @@ func (r *Router) List() []string {
 	for name := range r.agents {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 

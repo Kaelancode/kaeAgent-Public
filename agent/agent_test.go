@@ -4,9 +4,24 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
+
+func testTool(name string) tools.ToolDef {
+	return testToolWithHandler(name, func(context.Context, map[string]any) (any, error) {
+		return "ok", nil
+	})
+}
+
+func testToolWithHandler(name string, handler func(context.Context, map[string]any) (any, error)) tools.ToolDef {
+	return tools.ToolDef{
+		Name:    name,
+		Schema:  &schema.Schema{Type: "object"},
+		Handler: handler,
+	}
+}
 
 func TestAgentSessionConfigAndTools(t *testing.T) {
 	temp := float32(0.25)
@@ -25,7 +40,7 @@ func TestAgentSessionConfigAndTools(t *testing.T) {
 		MaxSteps:     7,
 	})
 
-	a.RegisterTool(tools.ToolDef{Name: "lookup"})
+	a.RegisterTool(testTool("lookup"))
 	a.AddSubagent("support")
 
 	cfg := a.SessionConfig()
@@ -57,21 +72,15 @@ func TestRuntimeUsesAgentDefaultsAndTools(t *testing.T) {
 		SystemPrompt: "agent instructions",
 		MaxTokens:    256,
 	})
-	agentDef.RegisterTool(tools.ToolDef{
-		Name: "from_agent",
-		Handler: func(context.Context, map[string]any) (any, error) {
-			return "ok", nil
-		},
-	})
+	agentDef.RegisterTool(testToolWithHandler("from_agent", func(context.Context, map[string]any) (any, error) {
+		return "ok", nil
+	}))
 
 	session := NewSession(SessionConfig{})
 	explicitTools := tools.NewRegistry()
-	explicitTools.Register(tools.ToolDef{
-		Name: "from_runtime",
-		Handler: func(context.Context, map[string]any) (any, error) {
-			return "ok", nil
-		},
-	})
+	explicitTools.Register(testToolWithHandler("from_runtime", func(context.Context, map[string]any) (any, error) {
+		return "ok", nil
+	}))
 
 	rt := NewRuntime(RuntimeConfig{
 		Agent:   agentDef,

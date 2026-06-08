@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/schema"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	agentsubagent "github.com/Kaelancode/kaeAgent-Public/agent/internal/subagent"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 const ActiveAgentMetadataKey = "active_agent"
-const TransferReasonMetadataKey = "transfer_reason"
-const ConsultReasonMetadataKey = "consult_reason"
+const TransferReasonMetadataKey = agentsubagent.TransferReasonMetadataKey
+const ConsultReasonMetadataKey = agentsubagent.ConsultReasonMetadataKey
 
 type SubagentResolver interface {
 	Get(name string) (*Agent, bool)
@@ -39,45 +39,11 @@ type TransferStep struct {
 	Request TransferRequest
 }
 
-const consultToolPrefix = "consult_"
-const transferToolPrefix = "transfer_to_"
+const consultToolPrefix = agentsubagent.ConsultToolPrefix
+const transferToolPrefix = agentsubagent.TransferToolPrefix
 
-var consultToolSchema = &schema.Schema{
-	Type:     "object",
-	Required: []string{"input"},
-	Properties: map[string]*schema.Schema{
-		"input": {
-			Type:        "string",
-			Description: "Task, question, or context to send to the consulted subagent.",
-		},
-		"reason": {
-			Type:        "string",
-			Description: "Why this consult is being requested.",
-		},
-		"metadata": {
-			Type:        "object",
-			Description: "Additional consult metadata as string key-value pairs.",
-		},
-	},
-}
-
-var transferToolSchema = &schema.Schema{
-	Type: "object",
-	Properties: map[string]*schema.Schema{
-		"input": {
-			Type:        "string",
-			Description: "Task or context to give the target subagent after transfer.",
-		},
-		"reason": {
-			Type:        "string",
-			Description: "Why the transfer is happening.",
-		},
-		"metadata": {
-			Type:        "object",
-			Description: "Additional transfer metadata as string key-value pairs.",
-		},
-	},
-}
+var consultToolSchema = agentsubagent.ConsultToolSchema
+var transferToolSchema = agentsubagent.TransferToolSchema
 
 func (r *Runtime) Consult(ctx context.Context, resolver SubagentResolver, req ConsultRequest) (string, error) {
 	child, err := r.prepareConsultRuntime(resolver, req)
@@ -497,109 +463,35 @@ func withAgentSystemPrompt(messages []llm.Message, systemPrompt string) []llm.Me
 }
 
 func transferToolName(agentName string) string {
-	return transferToolPrefix + agentName
+	return agentsubagent.TransferToolName(agentName)
 }
 
 func consultToolName(agentName string) string {
-	return consultToolPrefix + agentName
+	return agentsubagent.ConsultToolName(agentName)
 }
 
 func parseConsultRequest(target string, input map[string]any) (ConsultRequest, error) {
-	req := ConsultRequest{AgentName: target}
-
-	rawInput, ok := input["input"]
-	if !ok {
-		return ConsultRequest{}, fmt.Errorf("runtime: consult input field is required")
+	payload, err := agentsubagent.ParseConsultPayload(target, input)
+	if err != nil {
+		return ConsultRequest{}, err
 	}
-	consultInput, ok := rawInput.(string)
-	if !ok {
-		return ConsultRequest{}, fmt.Errorf("runtime: consult input field must be a string")
-	}
-	if strings.TrimSpace(consultInput) == "" {
-		return ConsultRequest{}, fmt.Errorf("runtime: consult input field is required")
-	}
-	req.Input = consultInput
-
-	metadata := map[string]string{}
-	if rawReason, ok := input["reason"]; ok {
-		reason, ok := rawReason.(string)
-		if !ok {
-			return ConsultRequest{}, fmt.Errorf("runtime: consult reason field must be a string")
-		}
-		if strings.TrimSpace(reason) != "" {
-			metadata[ConsultReasonMetadataKey] = reason
-		}
-	}
-	if rawMeta, ok := input["metadata"]; ok {
-		meta, ok := rawMeta.(map[string]any)
-		if !ok {
-			return ConsultRequest{}, fmt.Errorf("runtime: consult metadata field must be an object of string values")
-		}
-		for k, v := range meta {
-			if k == "" {
-				continue
-			}
-			vs, ok := v.(string)
-			if !ok {
-				return ConsultRequest{}, fmt.Errorf("runtime: consult metadata value for %q must be a string", k)
-			}
-			metadata[k] = vs
-		}
-	}
-	if len(metadata) > 0 {
-		req.Metadata = metadata
-	}
-
-	return req, nil
+	return ConsultRequest{
+		AgentName: payload.AgentName,
+		Input:     payload.Input,
+		Metadata:  payload.Metadata,
+	}, nil
 }
 
 func parseTransferRequest(target string, input map[string]any, fallbackInput string) (TransferRequest, error) {
-	req := TransferRequest{
-		AgentName: target,
-		Input:     fallbackInput,
+	payload, err := agentsubagent.ParseTransferPayload(target, input, fallbackInput)
+	if err != nil {
+		return TransferRequest{}, err
 	}
-
-	if rawInput, ok := input["input"]; ok {
-		vs, ok := rawInput.(string)
-		if !ok {
-			return TransferRequest{}, fmt.Errorf("runtime: transfer input field must be a string")
-		}
-		if strings.TrimSpace(vs) != "" {
-			req.Input = vs
-		}
-	}
-
-	metadata := map[string]string{}
-	if rawReason, ok := input["reason"]; ok {
-		reason, ok := rawReason.(string)
-		if !ok {
-			return TransferRequest{}, fmt.Errorf("runtime: transfer reason field must be a string")
-		}
-		if strings.TrimSpace(reason) != "" {
-			metadata[TransferReasonMetadataKey] = reason
-		}
-	}
-	if rawMeta, ok := input["metadata"]; ok {
-		meta, ok := rawMeta.(map[string]any)
-		if !ok {
-			return TransferRequest{}, fmt.Errorf("runtime: transfer metadata field must be an object of string values")
-		}
-		for k, v := range meta {
-			if k == "" {
-				continue
-			}
-			vs, ok := v.(string)
-			if !ok {
-				return TransferRequest{}, fmt.Errorf("runtime: transfer metadata value for %q must be a string", k)
-			}
-			metadata[k] = vs
-		}
-	}
-	if len(metadata) > 0 {
-		req.Metadata = metadata
-	}
-
-	return req, nil
+	return TransferRequest{
+		AgentName: payload.AgentName,
+		Input:     payload.Input,
+		Metadata:  payload.Metadata,
+	}, nil
 }
 
 func mergeStringMaps(base, override map[string]string) map[string]string {

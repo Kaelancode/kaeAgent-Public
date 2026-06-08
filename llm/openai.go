@@ -3,22 +3,21 @@ package llm
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"strings"
-	"time"
+
+	"github.com/Kaelancode/kaeAgent-Public/internal/llmhttp"
+	"github.com/Kaelancode/kaeAgent-Public/internal/sse"
 )
 
 const (
-	openaiDefaultBase    = "https://api.openai.com/v1"
-	openaiMaxRetries     = 3
-	openaiInitialBackoff = 500 * time.Millisecond
+	openaiDefaultBase = "https://api.openai.com/v1"
 )
 
 // OpenAIProvider implements Provider for the OpenAI API.
@@ -27,6 +26,8 @@ type OpenAIProvider struct {
 	baseURL string
 	client  *http.Client
 }
+
+var _ Provider = (*OpenAIProvider)(nil)
 
 // NewOpenAIProvider creates a provider reading OPENAI_API_KEY from the environment.
 func NewOpenAIProvider() (*OpenAIProvider, error) {
@@ -41,7 +42,7 @@ func NewOpenAIProvider() (*OpenAIProvider, error) {
 	return &OpenAIProvider{
 		apiKey:  key,
 		baseURL: base,
-		client:  &http.Client{Timeout: 120 * time.Second},
+		client:  llmhttp.NewClient(),
 	}, nil
 }
 
@@ -49,7 +50,7 @@ func (o *OpenAIProvider) Name() string { return "openai" }
 
 func (o *OpenAIProvider) Complete(ctx context.Context, req *Request) (*Response, error) {
 	body := o.buildRequestBody(req, false)
-	raw, err := o.doWithRetry(ctx, "/chat/completions", body)
+	raw, err := llmhttp.DoJSONWithRetry(ctx, "openai", o.client, o.baseURL+"/chat/completions", body, o.setRequestHeaders)
 	if err != nil {
 		return nil, fmt.Errorf("openai: complete: %w", err)
 	}
@@ -58,23 +59,13 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req *Request) (*Response,
 
 func (o *OpenAIProvider) Stream(ctx context.Context, req *Request) (<-chan Event, error) {
 	body := o.buildRequestBody(req, true)
-	httpReq, err := o.newRequest(ctx, "/chat/completions", body)
+	bodyReader, err := llmhttp.OpenSSEStream(ctx, "openai", o.client, o.baseURL+"/chat/completions", body, o.setRequestHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("openai: stream request: %w", err)
-	}
-
-	resp, err := o.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("openai: stream do: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("openai: stream status %d: %s", resp.StatusCode, string(respBody))
+		return nil, err
 	}
 
 	ch := make(chan Event, 64)
-	go o.readSSE(ctx, resp.Body, ch)
+	go o.readSSE(ctx, bodyReader, ch)
 	return ch, nil
 }
 
@@ -153,59 +144,8 @@ func (o *OpenAIProvider) buildRequestBody(req *Request, stream bool) map[string]
 		}
 		body["tools"] = tools
 	}
-	for k, v := range req.Options {
-		body[k] = v
-	}
+	applyProviderOptions(body, req.Options, reservedOptions("model", "messages", "stream", "tools"))
 	return body
-}
-
-func (o *OpenAIProvider) newRequest(ctx context.Context, path string, body map[string]any) (*http.Request, error) {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("openai: marshal: %w", err)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+path, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("openai: new request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
-	return httpReq, nil
-}
-
-func (o *OpenAIProvider) doWithRetry(ctx context.Context, path string, body map[string]any) ([]byte, error) {
-	var lastErr error
-	for attempt := 0; attempt < openaiMaxRetries; attempt++ {
-		if attempt > 0 {
-			backoff := time.Duration(float64(openaiInitialBackoff) * math.Pow(2, float64(attempt-1)))
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Errorf("openai: retry cancelled: %w", ctx.Err())
-			case <-time.After(backoff):
-			}
-		}
-		httpReq, err := o.newRequest(ctx, path, body)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := o.client.Do(httpReq)
-		if err != nil {
-			lastErr = fmt.Errorf("openai: request: %w", err)
-			continue
-		}
-		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("openai: status %d: %s", resp.StatusCode, string(data))
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("openai: status %d: %s", resp.StatusCode, string(data))
-		}
-		return data, nil
-	}
-	return nil, fmt.Errorf("openai: retries exhausted: %w", lastErr)
 }
 
 func (o *OpenAIProvider) doGet(ctx context.Context, path string) ([]byte, error) {
@@ -224,6 +164,10 @@ func (o *OpenAIProvider) doGet(ctx context.Context, path string) ([]byte, error)
 		return nil, fmt.Errorf("openai: get status %d: %s", resp.StatusCode, string(data))
 	}
 	return data, nil
+}
+
+func (o *OpenAIProvider) setRequestHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+o.apiKey)
 }
 
 func (o *OpenAIProvider) parseResponse(data []byte) (*Response, error) {
@@ -293,10 +237,17 @@ func (o *OpenAIProvider) readSSE(ctx context.Context, body io.ReadCloser, ch cha
 	defer body.Close()
 	defer close(ch)
 
-	scanner := bufio.NewScanner(body)
+	reader := bufio.NewReader(body)
 	var sawDone bool
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, err := sse.ReadLine(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("openai: sse read: %w", err)})
+			return
+		}
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -368,10 +319,6 @@ func (o *OpenAIProvider) readSSE(ctx context.Context, body io.ReadCloser, ch cha
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("openai: sse scan: %w", err)})
-		return
-	}
 	if !sawDone {
 		_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("openai: stream ended without [DONE]")})
 	}

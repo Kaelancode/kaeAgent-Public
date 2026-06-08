@@ -2,8 +2,10 @@
 package multiagent
 
 import (
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/llm"
+	"fmt"
+
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 const (
@@ -21,14 +23,27 @@ type TransferContext struct {
 
 // PrepareTransferContext extracts the relevant portion of a conversation for transfer.
 // If start/end are both 0 the entire history is included.
-func PrepareTransferContext(rt *agent.Runtime, start, end int) TransferContext {
+func PrepareTransferContext(rt *agent.Runtime, start, end int) (TransferContext, error) {
+	if rt == nil {
+		return TransferContext{}, fmt.Errorf("multiagent: prepare transfer context: runtime is nil")
+	}
 	sess := rt.SessionSnapshot()
+	allMessages := rt.ConversationMessages()
 
 	var msgs []llm.Message
 	if start == 0 && end == 0 {
-		msgs = rt.ConversationMessages()
+		msgs = allMessages
 	} else {
-		msgs = rt.ConversationSlice(start, end)
+		if start < 0 || end < 0 {
+			return TransferContext{}, fmt.Errorf("multiagent: prepare transfer context: invalid range [%d:%d]: indices must be non-negative", start, end)
+		}
+		if start > end {
+			return TransferContext{}, fmt.Errorf("multiagent: prepare transfer context: invalid range [%d:%d]: start exceeds end", start, end)
+		}
+		if end > len(allMessages) {
+			return TransferContext{}, fmt.Errorf("multiagent: prepare transfer context: invalid range [%d:%d]: end exceeds message count %d", start, end, len(allMessages))
+		}
+		msgs = allMessages[start:end]
 	}
 
 	meta := make(map[string]string)
@@ -39,7 +54,7 @@ func PrepareTransferContext(rt *agent.Runtime, start, end int) TransferContext {
 		SourceSessionID: sess.ID,
 		Messages:        msgs,
 		Metadata:        meta,
-	}
+	}, nil
 }
 
 // ApplyTransferContext injects the selected transfer messages into a target runtime's

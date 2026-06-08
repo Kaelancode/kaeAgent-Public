@@ -5,9 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
 )
 
 type subagentTestProvider struct {
@@ -139,12 +138,9 @@ func TestRuntimeTransferSetsActiveAgentAndMergesMetadata(t *testing.T) {
 		SystemPrompt: "root system",
 		Subagents:    []string{"billing"},
 	})
-	root.RegisterTool(tools.ToolDef{
-		Name: "root_tool",
-		Handler: func(context.Context, map[string]any) (any, error) {
-			return "ok", nil
-		},
-	})
+	root.RegisterTool(testToolWithHandler("root_tool", func(context.Context, map[string]any) (any, error) {
+		return "ok", nil
+	}))
 	parent := NewRuntime(RuntimeConfig{
 		Provider: provider,
 		Agent:    root,
@@ -158,12 +154,9 @@ func TestRuntimeTransferSetsActiveAgentAndMergesMetadata(t *testing.T) {
 		Model:        "billing-model",
 		SystemPrompt: "billing system",
 	})
-	billing.RegisterTool(tools.ToolDef{
-		Name: "billing_tool",
-		Handler: func(context.Context, map[string]any) (any, error) {
-			return "ok", nil
-		},
-	})
+	billing.RegisterTool(testToolWithHandler("billing_tool", func(context.Context, map[string]any) (any, error) {
+		return "ok", nil
+	}))
 	resolver := staticResolver{
 		"billing": billing,
 	}
@@ -445,24 +438,18 @@ func TestRuntimeApplyTransferRebindsStateWithoutRunning(t *testing.T) {
 		SystemPrompt: "root system",
 		Subagents:    []string{"billing"},
 	})
-	root.RegisterTool(tools.ToolDef{
-		Name: "root_tool",
-		Handler: func(context.Context, map[string]any) (any, error) {
-			return "ok", nil
-		},
-	})
+	root.RegisterTool(testToolWithHandler("root_tool", func(context.Context, map[string]any) (any, error) {
+		return "ok", nil
+	}))
 
 	billing := NewAgent(AgentConfig{
 		Name:         "billing",
 		Model:        "billing-model",
 		SystemPrompt: "billing system",
 	})
-	billing.RegisterTool(tools.ToolDef{
-		Name: "billing_tool",
-		Handler: func(context.Context, map[string]any) (any, error) {
-			return "ok", nil
-		},
-	})
+	billing.RegisterTool(testToolWithHandler("billing_tool", func(context.Context, map[string]any) (any, error) {
+		return "ok", nil
+	}))
 
 	rt := NewRuntime(RuntimeConfig{
 		Agent: root,

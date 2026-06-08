@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/yourorg/agent-sdk/store"
-	"github.com/yourorg/agent-sdk/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/store"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
 )
 
 type TrimStrategy string
@@ -16,6 +16,10 @@ type TrimStrategy string
 const (
 	TrimSlidingWindow TrimStrategy = "sliding_window"
 	TrimTokenCount    TrimStrategy = "token_count"
+
+	defaultSessionMaxHistory  = 50
+	defaultSessionTokenBudget = 128000
+	defaultSessionMaxTokens   = 4096
 )
 
 type SessionConfig struct {
@@ -51,13 +55,13 @@ func NewSession(cfg SessionConfig) *Session {
 		cfg.TrimStrategy = TrimSlidingWindow
 	}
 	if cfg.MaxHistory <= 0 {
-		cfg.MaxHistory = 50
+		cfg.MaxHistory = defaultSessionMaxHistory
 	}
 	if cfg.TokenBudget <= 0 {
-		cfg.TokenBudget = 128000
+		cfg.TokenBudget = defaultSessionTokenBudget
 	}
 	if cfg.MaxTokens <= 0 {
-		cfg.MaxTokens = 4096
+		cfg.MaxTokens = defaultSessionMaxTokens
 	}
 
 	return &Session{

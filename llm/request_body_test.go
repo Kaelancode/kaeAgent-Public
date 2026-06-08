@@ -31,6 +31,34 @@ func TestOpenAIBuildRequestBodyIncludesZeroTemperature(t *testing.T) {
 	}
 }
 
+func TestOpenAIBuildRequestBodyIgnoresReservedOptions(t *testing.T) {
+	provider := &OpenAIProvider{}
+	body := provider.buildRequestBody(&Request{
+		Model:    "gpt-test",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Options: map[string]any{
+			"model":    "evil-model",
+			"messages": []map[string]any{{"role": "user", "content": "evil"}},
+			"stream":   true,
+			"tools":    []map[string]any{{"name": "evil"}},
+			"user":     "safe-provider-option",
+		},
+	}, false)
+
+	if body["model"] != "gpt-test" {
+		t.Fatalf("expected typed model to win, got %#v", body["model"])
+	}
+	if body["stream"] != nil {
+		t.Fatalf("expected stream option to be ignored, got %#v", body["stream"])
+	}
+	if _, ok := body["tools"]; ok {
+		t.Fatal("expected tools option to be ignored")
+	}
+	if body["user"] != "safe-provider-option" {
+		t.Fatalf("expected non-reserved option to be applied, got %#v", body["user"])
+	}
+}
+
 func TestClaudeBuildRequestBodyIncludesZeroTemperature(t *testing.T) {
 	provider := &ClaudeProvider{}
 	body := provider.buildRequestBody(&Request{
@@ -98,6 +126,34 @@ func TestGeminiBuildRequestBodyAppliesOptions(t *testing.T) {
 	}
 	if _, ok := body["safetySettings"]; !ok {
 		t.Fatal("expected top-level safetySettings to be present")
+	}
+}
+
+func TestGeminiBuildRequestBodyIgnoresReservedTopLevelOptions(t *testing.T) {
+	provider := &GeminiProvider{}
+	body := provider.buildRequestBody(&Request{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Options: map[string]any{
+			"contents":          []map[string]any{{"role": "user"}},
+			"tools":             []map[string]any{{"functionDeclarations": []map[string]any{{"name": "evil"}}}},
+			"systemInstruction": map[string]any{"parts": []map[string]any{{"text": "evil"}}},
+			"safetySettings":    []map[string]any{{"category": "HARM_CATEGORY_HATE_SPEECH"}},
+		},
+	})
+
+	contents, ok := body["contents"].([]map[string]any)
+	if !ok || len(contents) != 1 || contents[0]["role"] != "user" {
+		t.Fatalf("expected typed contents to remain, got %#v", body["contents"])
+	}
+	if _, ok := body["tools"]; ok {
+		t.Fatal("expected reserved tools option to be ignored")
+	}
+	if _, ok := body["systemInstruction"]; ok {
+		t.Fatal("expected reserved systemInstruction option to be ignored")
+	}
+	if _, ok := body["safetySettings"]; !ok {
+		t.Fatal("expected non-reserved option to be applied")
 	}
 }
 

@@ -6,18 +6,23 @@ import (
 	"sync"
 	"time"
 
+	agentengine "github.com/Kaelancode/kaeAgent-Public/agent/internal/engine"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/compaction/strategy/tokenlimit"
+	"github.com/Kaelancode/kaeAgent-Public/compaction/strategy/turnwindow"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/observability"
+	"github.com/Kaelancode/kaeAgent-Public/store"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 	"github.com/rs/zerolog"
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/compaction/strategy/tokenlimit"
-	"github.com/yourorg/agent-sdk/compaction/strategy/turnwindow"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/observability"
-	"github.com/yourorg/agent-sdk/store"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
 )
 
-const defaultMaxSteps = 25
+const (
+	defaultMaxSteps           = 25
+	defaultOutputTokenReserve = 20000
+	defaultCharsPerToken      = 4
+)
 
 var streamSendTimeout = 250 * time.Millisecond
 
@@ -150,7 +155,7 @@ func NewRuntime(cfg RuntimeConfig) *Runtime {
 		rt.modelContextLimit = cfg.Session.Config.TokenBudget
 	}
 	if rt.outputReserve <= 0 {
-		rt.outputReserve = 20000
+		rt.outputReserve = defaultOutputTokenReserve
 	}
 	rt.middleware = append([]Middleware(nil), cfg.Middleware...)
 	rt.streamMiddleware = append([]StreamingMiddleware(nil), cfg.StreamingMiddleware...)
@@ -265,19 +270,7 @@ func defaultCompactor(session *Session) compaction.Compactor {
 }
 
 func toLLMToolDefs(stepTools []tools.ToolDef) []llm.ToolDef {
-	llmTools := make([]llm.ToolDef, len(stepTools))
-	for i, t := range stepTools {
-		var params map[string]any
-		if t.Schema != nil {
-			params = t.Schema.ToMap()
-		}
-		llmTools[i] = llm.ToolDef{
-			Name:        t.Name,
-			Description: t.Description,
-			Parameters:  params,
-		}
-	}
-	return llmTools
+	return agentengine.ToolDefsToLLM(stepTools)
 }
 
 func messagesSummary(msgs []llm.Message) []map[string]string {
@@ -297,74 +290,6 @@ func messagesSummary(msgs []llm.Message) []map[string]string {
 		summary[i] = s
 	}
 	return summary
-}
-
-func otelProviderName(providerName string) string {
-	switch providerName {
-	case "claude":
-		return "anthropic"
-	case "gemini":
-		return "gcp.gemini"
-	default:
-		return providerName
-	}
-}
-
-func messagesToOTelFormat(msgs []llm.Message) []map[string]any {
-	result := make([]map[string]any, 0, len(msgs))
-	for _, m := range msgs {
-		entry := map[string]any{"role": m.Role}
-		parts := make([]map[string]any, 0)
-		if m.Content != "" {
-			content := m.Content
-			if len(content) > 2000 {
-				content = content[:1997] + "..."
-			}
-			parts = append(parts, map[string]any{"type": "text", "content": content})
-		}
-		for _, tc := range m.ToolCalls {
-			parts = append(parts, map[string]any{
-				"type":      "tool_call",
-				"id":        tc.ID,
-				"name":      tc.Name,
-				"arguments": tc.Input,
-			})
-		}
-		if m.ToolCallID != "" {
-			content := m.Content
-			if len(content) > 2000 {
-				content = content[:1997] + "..."
-			}
-			parts = append(parts, map[string]any{
-				"type":            "tool_call_response",
-				"id":              m.ToolCallID,
-				"result":          content,
-			})
-		}
-		if len(parts) > 0 {
-			entry["parts"] = parts
-		}
-		result = append(result, entry)
-	}
-	return result
-}
-
-func extractContentFromOTelMsg(msg map[string]any) string {
-	parts, ok := msg["parts"].([]map[string]any)
-	if !ok {
-		if content, ok := msg["content"].(string); ok {
-			return content
-		}
-		return ""
-	}
-	for _, p := range parts {
-		if p["type"] == "text" {
-			if content, ok := p["content"].(string); ok {
-				return content
-			}
-		}
-	}
-	return ""
 }
 
 func extractResponseText(resp *llm.Response) string {
@@ -390,8 +315,8 @@ func LoadConversationFromStore(ctx context.Context, store store.ConversationStor
 	state := ConversationState{
 		Messages: messages,
 		Strategy: TrimSlidingWindow,
-		MaxMsgs:  50,
-		MaxChars: 128000 * 4,
+		MaxMsgs:  defaultSessionMaxHistory,
+		MaxChars: defaultSessionTokenBudget * defaultCharsPerToken,
 	}
 	return NewConversationFromState(state), nil
 }

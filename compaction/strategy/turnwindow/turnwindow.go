@@ -3,8 +3,8 @@ package turnwindow
 import (
 	"context"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 type Strategy struct {
@@ -81,9 +81,7 @@ func splitTurns(messages []llm.Message) ([]llm.Message, [][]llm.Message) {
 }
 
 func cloneMessages(messages []llm.Message) []llm.Message {
-	out := make([]llm.Message, len(messages))
-	copy(out, messages)
-	return out
+	return compaction.CloneMessages(messages)
 }
 
 func intValue(config map[string]any, key string, fallback int) int {

@@ -2,6 +2,24 @@
 
 The `observability` package provides a tracing abstraction for distributed tracing backends. The `otel` sub-package bridges to OpenTelemetry.
 
+## Ownership Boundary
+
+`observability` owns generic tracing primitives and exporters:
+
+- `Tracer` and `Span`
+- `NoopTracer` and `StdoutTracer`
+- the OpenTelemetry bridge
+
+The `agent` package owns agent-runtime semantic instrumentation:
+
+- root and child `invoke_agent` span lifecycle
+- chat and tool span parenting
+- transfer span rotation
+- GenAI attributes and ordered execution events
+- terminal span completion for `Run` and `Stream`
+
+`agent/internal/engine` does not import `observability` and does not own span lifecycle.
+
 ## Tracer Interface
 
 ```go
@@ -18,7 +36,7 @@ type Tracer interface {
 - `AddEvent` records a timestamped event with string attributes.
 - `SetSpanAttributes` sets typed attributes (string, int, int64, float64, bool) on an existing span.
 
-##Built-in Implementations
+## Built-in Implementations
 
 | Implementation | Package | Use Case |
 |---|---|---|
@@ -31,7 +49,7 @@ type Tracer interface {
 ### OpenTelemetry (Jaeger, OTLP gRPC)
 
 ```go
-import oteltracer "github.com/yourorg/agent-sdk/observability/otel"
+import oteltracer "github.com/Kaelancode/kaeAgent-Public/observability/otel"
 
 tp, shutdown, err := oteltracer.NewTracerProvider(ctx, oteltracer.ProviderConfig{
     Endpoint:     "localhost:4317",
@@ -96,14 +114,15 @@ invoke_agent {agent_name}                     ← root span
 │   ├── per-message events                    ← gen_ai.user.message, gen_ai.system.message, etc.
 │   ├── gen_ai.input.messages attribute       ← full input in OTel structured format
 │   ├── langfuse.observation.input attribute  ← same structured input
-│   ├── [if tool calls]: execute_tool {name}  ← one per tool dispatch
-│   │   ├── gen_ai.tool.input attribute
-│   │   ├── gen_ai.tool.output attribute
-│   │   ├── langfuse.observation.input attribute
-│   │   └── langfuse.observation.output attribute
 │   ├── gen_ai.output.messages attribute      ← response in OTel structured format
 │   ├── langfuse.observation.output attribute ← response text or tool call summary
 │   └── gen_ai.usage.input_tokens / output_tokens
+│
+├── [if normal tool calls]: execute_tool {name} ← one per runtime tool dispatch
+│   ├── gen_ai.tool.input attribute
+│   ├── gen_ai.tool.output attribute
+│   ├── langfuse.observation.input attribute
+│   └── langfuse.observation.output attribute
 │
 ├── [if transfer]: gen_ai.agent.transfer event
 ├── [if transfer]: invoke_agent {target_name} ← child agent span
@@ -142,6 +161,8 @@ Events:
 - `gen_ai.user.message` — at start with `role`, `content`, `gen_ai.input.messages`
 - `gen_ai.assistant.message` — at end with `role`, `content`, `gen_ai.output.messages`
 - `gen_ai.agent.transfer` — on transfer with `gen_ai.handoff.from_agent`, `gen_ai.handoff.to_agent`, `content`
+- `agent.step.started` / `agent.step.completed` — ordered SDK execution log for each LLM step
+- `agent.tool.started` / `agent.tool.completed` — ordered SDK execution log for normal tool dispatches
 
 #### `chat` span
 
@@ -158,6 +179,7 @@ Created for each LLM provider call.
 | `gen_ai.request.max_tokens` | int | After creation |
 | `gen_ai.request.temperature` | float64 | After creation (if set) |
 | `gen_ai.request.stream` | bool | After creation |
+| `gen_ai.step.index` | int | After creation |
 | `gen_ai.tool.definitions` | string (JSON) | After creation (if tools present) |
 | `gen_ai.input.messages` | string (JSON) | After creation |
 | `langfuse.observation.input` | string (JSON) | After creation |
@@ -188,6 +210,10 @@ Created for each tool dispatch.
 | `gen_ai.conversation.id` | string | Span creation |
 | `gen_ai.agent.name` | string | Span creation (if agent has a name) |
 | `gen_ai.agent.id` | string | Span creation (if agent ID set) |
+| `gen_ai.step.index` | int | After creation |
+| `gen_ai.tool.index` | int | After creation |
+| `gen_ai.execution.group.id` | string | After creation |
+| `gen_ai.execution.mode` | string | After creation (`"sequential"` or `"parallel"`) |
 | `gen_ai.tool.input` | string (JSON) | After creation |
 | `langfuse.observation.input` | string (JSON) | After creation |
 | `gen_ai.tool.output` | string | After tool execution |
@@ -196,6 +222,31 @@ Created for each tool dispatch.
 
 Events:
 - `gen_ai.tool.message` — at start (input) and end (output)
+
+## Trace Ordering
+
+Span trees encode parent-child structure, but sibling observations can share the
+same timestamp in third-party backends. The runtime therefore emits ordered SDK
+events on the active `invoke_agent` span:
+
+- `agent.step.started` — before an LLM step runs.
+- `agent.step.completed` — after an LLM step returns or fails.
+- `agent.tool.started` — before a normal tool dispatch starts.
+- `agent.tool.completed` — after a normal tool dispatch returns or fails.
+
+These events include `gen_ai.step.index`, and tool events also include
+`gen_ai.tool.index`, `gen_ai.tool.name`, `gen_ai.tool.call_id`,
+`gen_ai.execution.group.id`, and `gen_ai.execution.mode`.
+
+For parallel tool batches, `gen_ai.tool.index` is the model/output order and the
+order used when persisting tool results back into the conversation. Tool
+completion order may differ; the events are an execution log, not a request to
+force backend UI sorting.
+
+`gen_ai.execution.mode` is `"parallel"` only when `MaxToolConcurrency > 1` and
+the step produced more than one tool call. Single-tool batches are traced as
+`"sequential"` even when the runtime is configured to allow parallel tool
+execution.
 
 ## Transfer Tracing
 
@@ -207,12 +258,16 @@ When an agent transfers control to another agent during a run:
 4. Subsequent LLM calls, tool dispatches, and further transfers happen under this new child span.
 5. At run completion, the child agent span is ended before the root span.
 
+Transfer is an ownership/control-flow change, not agent-as-tool execution. It is
+therefore **not** represented as an `execute_tool transfer_to_*` span. Consult
+subagents are the agent-as-tool path and are traced through normal tool
+execution plus the consulted agent's run.
+
 This produces a trace like:
 
 ```
 invoke_agent shop_assistant          ← root span
 ├── chat gpt-4o                      ← shop_assistant's LLM call (may produce a transfer tool call)
-├── execute_tool transfer_to_product_specialist
 ├── gen_ai.agent.transfer event      ← from=shop_assistant, to=product_specialist
 └── invoke_agent product_specialist   ← child span (steps after transfer run here)
     ├── chat gpt-4o                   ← product_specialist's LLM calls
@@ -247,7 +302,7 @@ All backends receive all attributes. The `langfuse.observation.*` attributes are
 | `GeminiProvider` | `"gcp.gemini"` |
 | `QwenProvider` | `"qwen"` |
 
-Custom providers that don't use OTel-standard names are mapped by `otelProviderName()` in `agent/runtime.go`.
+Custom providers that do not use OTel-standard names are mapped by `ProviderName()` in `agent/internal/trace/format.go`.
 
 ## Adding a Custom Tracer
 

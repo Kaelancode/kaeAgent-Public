@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 type streamResponseStep struct {
@@ -29,6 +29,9 @@ type fakeStreamProvider struct {
 
 func (f *fakeStreamProvider) Complete(_ context.Context, req *llm.Request) (*llm.Response, error) {
 	f.requests = append(f.requests, cloneRequest(req))
+	if f.stepIdx >= len(f.steps) {
+		return nil, errors.New("fake stream provider: complete called after all steps were consumed")
+	}
 	step := f.steps[f.stepIdx]
 	f.stepIdx++
 
@@ -107,6 +110,38 @@ func (f *fakeStreamProvider) Stream(_ context.Context, req *llm.Request) (<-chan
 
 func (f *fakeStreamProvider) Models(_ context.Context) ([]llm.ModelInfo, error) { return nil, nil }
 func (f *fakeStreamProvider) Name() string                                      { return "fake-stream" }
+
+func TestRuntime_StreamBudgetFailureDoesNotAppendUserMessage(t *testing.T) {
+	session := NewSession(SessionConfig{
+		Model:        "test-model",
+		BudgetConfig: &streaming.BudgetConfig{MaxTokens: 1},
+	})
+	session.Budget.Add(2, 0)
+
+	provider := &fakeStreamProvider{}
+	rt := NewRuntime(RuntimeConfig{
+		Provider: provider,
+		Session:  session,
+	})
+
+	ch, err := rt.Stream(context.Background(), "this should be rejected")
+	if err != nil {
+		t.Fatalf("stream setup failed: %v", err)
+	}
+	_, streamErr := collectEvents(ch)
+	if streamErr == nil {
+		t.Fatal("expected budget stream error")
+	}
+	if !strings.Contains(streamErr.Error(), "budget: token limit exceeded") {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if len(provider.requests) != 0 {
+		t.Fatalf("expected provider not to be called, got %d requests", len(provider.requests))
+	}
+	if msgs := rt.ConversationMessages(); len(msgs) != 0 {
+		t.Fatalf("expected rejected stream not to append conversation messages, got %+v", msgs)
+	}
+}
 
 func collectEvents(ch <-chan streaming.Event) ([]streaming.Event, error) {
 	var events []streaming.Event
@@ -209,12 +244,9 @@ func TestStream_WithToolCall(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	registry.Register(tools.ToolDef{
-		Name: "greet",
-		Handler: func(_ context.Context, input map[string]any) (any, error) {
-			return "Hello, " + input["name"].(string) + "!", nil
-		},
-	})
+	registry.Register(testToolWithHandler("greet", func(_ context.Context, input map[string]any) (any, error) {
+		return "Hello, " + input["name"].(string) + "!", nil
+	}))
 
 	session := NewSession(SessionConfig{Model: "fake-model", MaxTokens: 100})
 	rt := NewRuntime(RuntimeConfig{
@@ -307,13 +339,13 @@ func TestStream_ContinuesAfterModelDrivenTransfer(t *testing.T) {
 		SystemPrompt: "root system",
 		Subagents:    []string{"billing"},
 	})
-	root.RegisterTool(tools.ToolDef{Name: "root_tool"})
+	root.RegisterTool(testTool("root_tool"))
 	billing := NewAgent(AgentConfig{
 		Name:         "billing",
 		Model:        "billing-model",
 		SystemPrompt: "billing system",
 	})
-	billing.RegisterTool(tools.ToolDef{Name: "billing_tool"})
+	billing.RegisterTool(testTool("billing_tool"))
 
 	registry := NewRegistry()
 	registry.Register(root)
@@ -624,7 +656,7 @@ func TestStream_ModelDrivenTransferRejectsMixedToolCalls(t *testing.T) {
 	}
 
 	root := NewAgent(AgentConfig{Name: "root", Model: "root-model", Subagents: []string{"billing"}})
-	root.RegisterTool(tools.ToolDef{Name: "lookup"})
+	root.RegisterTool(testTool("lookup"))
 	billing := NewAgent(AgentConfig{Name: "billing", Model: "billing-model"})
 	registry := NewRegistry()
 	registry.Register(root)
@@ -760,12 +792,9 @@ func TestStream_ToolCallFragmentsUseProviderIndex(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	registry.Register(tools.ToolDef{
-		Name: "greet",
-		Handler: func(_ context.Context, input map[string]any) (any, error) {
-			return "Hello, " + input["name"].(string) + "!", nil
-		},
-	})
+	registry.Register(testToolWithHandler("greet", func(_ context.Context, input map[string]any) (any, error) {
+		return "Hello, " + input["name"].(string) + "!", nil
+	}))
 
 	session := NewSession(SessionConfig{Model: "fake-model", MaxTokens: 100})
 	rt := NewRuntime(RuntimeConfig{
@@ -913,12 +942,9 @@ func TestStream_MaxStepsExceeded(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	registry.Register(tools.ToolDef{
-		Name: "loop",
-		Handler: func(_ context.Context, _ map[string]any) (any, error) {
-			return "looping", nil
-		},
-	})
+	registry.Register(testToolWithHandler("loop", func(_ context.Context, _ map[string]any) (any, error) {
+		return "looping", nil
+	}))
 
 	session := NewSession(SessionConfig{Model: "fake-model"})
 	rt := NewRuntime(RuntimeConfig{
@@ -992,73 +1018,5 @@ func TestStream_StopsWhenConsumerDoesNotDrain(t *testing.T) {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("expected stream goroutine to exit when consumer stops draining")
-	}
-}
-
-func TestToolCallAssembler(t *testing.T) {
-	a := newToolCallAssembler()
-
-	a.addFragment(0, &llm.ToolCallDelta{ID: "call_1", Name: "get_weather"})
-	a.addFragment(0, &llm.ToolCallDelta{Input: `{"city": "NYC"}`})
-
-	calls, err := a.assemble()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(calls))
-	}
-	if calls[0].ID != "call_1" {
-		t.Errorf("expected ID 'call_1', got %q", calls[0].ID)
-	}
-	if calls[0].Name != "get_weather" {
-		t.Errorf("expected name 'get_weather', got %q", calls[0].Name)
-	}
-	if calls[0].Input["city"] != "NYC" {
-		t.Errorf("expected input city=NYC, got %v", calls[0].Input)
-	}
-}
-
-func TestToolCallAssembler_MultipleFragments(t *testing.T) {
-	a := newToolCallAssembler()
-
-	a.addFragment(0, &llm.ToolCallDelta{ID: "call_1", Name: "search"})
-	a.addFragment(0, &llm.ToolCallDelta{Input: `{"qu`})
-	a.addFragment(0, &llm.ToolCallDelta{Input: `ery": "test"}`})
-
-	calls, err := a.assemble()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(calls))
-	}
-	if calls[0].Input["query"] != "test" {
-		t.Errorf("expected query=test, got %v", calls[0].Input)
-	}
-}
-
-func TestToolCallAssembler_Empty(t *testing.T) {
-	a := newToolCallAssembler()
-	calls, err := a.assemble()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if calls != nil {
-		t.Errorf("expected nil calls, got %v", calls)
-	}
-}
-
-func TestToolCallAssembler_Reset(t *testing.T) {
-	a := newToolCallAssembler()
-	a.addFragment(0, &llm.ToolCallDelta{ID: "call_1", Name: "test"})
-	a.reset()
-
-	calls, err := a.assemble()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if calls != nil {
-		t.Errorf("expected nil calls after reset, got %v", calls)
 	}
 }

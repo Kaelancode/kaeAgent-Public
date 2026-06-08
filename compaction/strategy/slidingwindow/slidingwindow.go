@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 type Strategy struct {
@@ -23,7 +23,7 @@ func (s *Strategy) Name() string {
 func (s *Strategy) Compact(_ context.Context, input compaction.Input) (compaction.Output, error) {
 	if s.MaxMessages <= 0 || len(input.Messages) <= s.MaxMessages {
 		return compaction.Output{
-			Messages: compactionClone(input.Messages),
+			Messages: compaction.CloneMessages(input.Messages),
 		}, nil
 	}
 
@@ -53,7 +53,7 @@ func (s *Strategy) Compact(_ context.Context, input compaction.Input) (compactio
 		otherMsgs = otherMsgs[len(otherMsgs)-keep:]
 	}
 
-	out := append(compactionClone(systemMsgs), otherMsgs...)
+	out := append(compaction.CloneMessages(systemMsgs), compaction.CloneMessages(otherMsgs)...)
 	return compaction.Output{
 		Messages:  out,
 		Compacted: len(out) != len(input.Messages),
@@ -63,12 +63,6 @@ func (s *Strategy) Compact(_ context.Context, input compaction.Input) (compactio
 func Factory(config map[string]any) (compaction.Strategy, error) {
 	maxMessages := intValue(config, "max_messages", 0)
 	return New(maxMessages), nil
-}
-
-func compactionClone(messages []llm.Message) []llm.Message {
-	out := make([]llm.Message, len(messages))
-	copy(out, messages)
-	return out
 }
 
 func intValue(config map[string]any, key string, fallback int) int {

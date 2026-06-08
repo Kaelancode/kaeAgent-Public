@@ -96,3 +96,40 @@ func TestOpenAIStreamErrorIncludesResponseBody(t *testing.T) {
 		t.Fatalf("expected response body in error, got %v", err)
 	}
 }
+
+func TestGeminiRequestsUseAPIKeyHeader(t *testing.T) {
+	var gotPath string
+	var gotQuery string
+	var gotKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		gotKey = r.Header.Get("x-goog-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[]}`))
+	}))
+	defer server.Close()
+
+	provider := &GeminiProvider{
+		apiKey:  "test-key",
+		baseURL: server.URL,
+		client:  server.Client(),
+	}
+
+	_, err := provider.Complete(context.Background(), &Request{
+		Model:    "gemini-test",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+	if gotPath != "/models/gemini-test:generateContent" {
+		t.Fatalf("unexpected path: %q", gotPath)
+	}
+	if strings.Contains(gotQuery, "key=") {
+		t.Fatalf("expected API key not to be in query, got %q", gotQuery)
+	}
+	if gotKey != "test-key" {
+		t.Fatalf("expected x-goog-api-key header, got %q", gotKey)
+	}
+}

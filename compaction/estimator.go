@@ -3,7 +3,7 @@ package compaction
 import (
 	"encoding/json"
 
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 const DefaultCharsPerToken = 4

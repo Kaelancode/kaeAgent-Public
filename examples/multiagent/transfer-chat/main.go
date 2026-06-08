@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/examples/internal/exampleutil"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/examples/multiagent/internal/exampleutil"
-	"github.com/yourorg/agent-sdk/schema"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
 )
 
 func main() {
@@ -171,6 +171,9 @@ func main() {
 			continue
 		}
 		if exampleutil.HandleCommonCommand(input, rt, budget, tracer, registry, triage.Name()) {
+			if exampleutil.IsQuitCommand(input) {
+				break
+			}
 			continue
 		}
 

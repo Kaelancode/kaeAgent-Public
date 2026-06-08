@@ -2,12 +2,13 @@ package file
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 func testStore(t *testing.T) *ConversationStore {
@@ -140,6 +141,48 @@ func TestConversationStore_Delete(t *testing.T) {
 	}
 }
 
+func TestConversationStore_RespectsCanceledContext(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	msgs := []llm.Message{{Role: "user", Content: "blocked"}}
+	if err := s.Save(canceled, "conv_cancel", msgs); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Save error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, "conv_cancel.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected canceled Save to skip file creation, stat err=%v", err)
+	}
+
+	if err := s.Save(ctx, "conv_existing", []llm.Message{{Role: "user", Content: "initial"}}); err != nil {
+		t.Fatalf("Save existing failed: %v", err)
+	}
+	if _, err := s.Load(canceled, "conv_existing"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Load error, got %v", err)
+	}
+	if err := s.Append(canceled, "conv_existing", []llm.Message{{Role: "assistant", Content: "blocked"}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Append error, got %v", err)
+	}
+	loaded, err := s.Load(ctx, "conv_existing")
+	if err != nil {
+		t.Fatalf("Load after canceled Append failed: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected canceled Append to skip mutation, got %d messages", len(loaded))
+	}
+	if err := s.Delete(canceled, "conv_existing"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Delete error, got %v", err)
+	}
+	loaded, err = s.Load(ctx, "conv_existing")
+	if err != nil {
+		t.Fatalf("Load after canceled Delete failed: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected canceled Delete to preserve data, got %#v", loaded)
+	}
+}
+
 func TestConversationStore_PersistsAcrossInstances(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -228,5 +271,24 @@ func TestConversationStore_RejectsPathTraversalConvID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid conversation id") {
 		t.Fatalf("expected invalid conversation id error, got %v", err)
+	}
+}
+
+func TestAtomicWriteRemovesTempFileOnRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target")
+	if err := os.Mkdir(path, 0755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+
+	err := atomicWrite(path, []byte("data"))
+	if err == nil {
+		t.Fatal("expected rename failure")
+	}
+	if !strings.Contains(err.Error(), "rename temp file") {
+		t.Fatalf("expected rename temp file error, got %v", err)
+	}
+	if _, statErr := os.Stat(path + ".tmp"); !os.IsNotExist(statErr) {
+		t.Fatalf("expected temp file to be removed, stat err=%v", statErr)
 	}
 }

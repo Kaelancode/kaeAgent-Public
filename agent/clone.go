@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/yourorg/agent-sdk/llm"
+import "github.com/Kaelancode/kaeAgent-Public/llm"
 
 func cloneSessionConfig(cfg SessionConfig) SessionConfig {
 	out := cfg

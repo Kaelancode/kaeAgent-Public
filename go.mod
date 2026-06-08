@@ -1,4 +1,4 @@
-module github.com/yourorg/agent-sdk
+module github.com/Kaelancode/kaeAgent-Public
 
 go 1.25.0
 

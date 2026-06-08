@@ -6,7 +6,7 @@ conversation memory, compaction, streaming, storage, and observability integrati
 The module path is:
 
 ```text
-github.com/yourorg/agent-sdk
+github.com/Kaelancode/kaeAgent-Public
 ```
 
 ## Project Map

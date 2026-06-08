@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/store"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/store"
 )
 
 type ConversationStore struct {
@@ -21,16 +21,28 @@ func NewConversationStore() *ConversationStore {
 	}
 }
 
-func (s *ConversationStore) Save(_ context.Context, convID string, messages []llm.Message) error {
+func (s *ConversationStore) Save(ctx context.Context, convID string, messages []llm.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.store[convID] = cloneMessages(messages)
 	return nil
 }
 
-func (s *ConversationStore) Load(_ context.Context, convID string) ([]llm.Message, error) {
+func (s *ConversationStore) Load(ctx context.Context, convID string) ([]llm.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	msgs, ok := s.store[convID]
 	if !ok {
 		return nil, nil
@@ -38,18 +50,30 @@ func (s *ConversationStore) Load(_ context.Context, convID string) ([]llm.Messag
 	return cloneMessages(msgs), nil
 }
 
-func (s *ConversationStore) Append(_ context.Context, convID string, messages []llm.Message) error {
+func (s *ConversationStore) Append(ctx context.Context, convID string, messages []llm.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	existing := s.store[convID]
 	appended := cloneMessages(messages)
 	s.store[convID] = append(existing, appended...)
 	return nil
 }
 
-func (s *ConversationStore) Delete(_ context.Context, convID string) error {
+func (s *ConversationStore) Delete(ctx context.Context, convID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	delete(s.store, convID)
 	return nil
 }

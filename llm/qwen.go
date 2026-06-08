@@ -3,22 +3,21 @@ package llm
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"strings"
-	"time"
+
+	"github.com/Kaelancode/kaeAgent-Public/internal/llmhttp"
+	"github.com/Kaelancode/kaeAgent-Public/internal/sse"
 )
 
 const (
-	qwenDefaultBase    = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-	qwenMaxRetries     = 3
-	qwenInitialBackoff = 500 * time.Millisecond
+	qwenDefaultBase = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
 
 // QwenProvider implements Provider for Alibaba's Qwen API (DashScope OpenAI-compatible mode).
@@ -27,6 +26,8 @@ type QwenProvider struct {
 	baseURL string
 	client  *http.Client
 }
+
+var _ Provider = (*QwenProvider)(nil)
 
 // NewQwenProvider creates a provider reading DASHSCOPE_API_KEY from the environment.
 func NewQwenProvider() (*QwenProvider, error) {
@@ -41,7 +42,7 @@ func NewQwenProvider() (*QwenProvider, error) {
 	return &QwenProvider{
 		apiKey:  key,
 		baseURL: base,
-		client:  &http.Client{Timeout: 120 * time.Second},
+		client:  llmhttp.NewClient(),
 	}, nil
 }
 
@@ -49,7 +50,7 @@ func (q *QwenProvider) Name() string { return "qwen" }
 
 func (q *QwenProvider) Complete(ctx context.Context, req *Request) (*Response, error) {
 	body := q.buildRequestBody(req, false)
-	raw, err := q.doWithRetry(ctx, "/chat/completions", body)
+	raw, err := llmhttp.DoJSONWithRetry(ctx, "qwen", q.client, q.baseURL+"/chat/completions", body, q.setRequestHeaders)
 	if err != nil {
 		return nil, fmt.Errorf("qwen: complete: %w", err)
 	}
@@ -58,23 +59,13 @@ func (q *QwenProvider) Complete(ctx context.Context, req *Request) (*Response, e
 
 func (q *QwenProvider) Stream(ctx context.Context, req *Request) (<-chan Event, error) {
 	body := q.buildRequestBody(req, true)
-	httpReq, err := q.newRequest(ctx, "/chat/completions", body)
+	bodyReader, err := llmhttp.OpenSSEStream(ctx, "qwen", q.client, q.baseURL+"/chat/completions", body, q.setRequestHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("qwen: stream request: %w", err)
-	}
-
-	resp, err := q.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("qwen: stream do: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, fmt.Errorf("qwen: stream status %d: %s", resp.StatusCode, string(respBody))
+		return nil, err
 	}
 
 	ch := make(chan Event, 64)
-	go q.readSSE(ctx, resp.Body, ch)
+	go q.readSSE(ctx, bodyReader, ch)
 	return ch, nil
 }
 
@@ -142,59 +133,8 @@ func (q *QwenProvider) buildRequestBody(req *Request, stream bool) map[string]an
 		}
 		body["tools"] = tools
 	}
-	for k, v := range req.Options {
-		body[k] = v
-	}
+	applyProviderOptions(body, req.Options, reservedOptions("model", "messages", "stream", "tools"))
 	return body
-}
-
-func (q *QwenProvider) newRequest(ctx context.Context, path string, body map[string]any) (*http.Request, error) {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("qwen: marshal: %w", err)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, q.baseURL+path, bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("qwen: new request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+q.apiKey)
-	return httpReq, nil
-}
-
-func (q *QwenProvider) doWithRetry(ctx context.Context, path string, body map[string]any) ([]byte, error) {
-	var lastErr error
-	for attempt := 0; attempt < qwenMaxRetries; attempt++ {
-		if attempt > 0 {
-			backoff := time.Duration(float64(qwenInitialBackoff) * math.Pow(2, float64(attempt-1)))
-			select {
-			case <-ctx.Done():
-				return nil, fmt.Errorf("qwen: retry cancelled: %w", ctx.Err())
-			case <-time.After(backoff):
-			}
-		}
-		httpReq, err := q.newRequest(ctx, path, body)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := q.client.Do(httpReq)
-		if err != nil {
-			lastErr = fmt.Errorf("qwen: request: %w", err)
-			continue
-		}
-		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			lastErr = fmt.Errorf("qwen: status %d: %s", resp.StatusCode, string(data))
-			continue
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("qwen: status %d: %s", resp.StatusCode, string(data))
-		}
-		return data, nil
-	}
-	return nil, fmt.Errorf("qwen: retries exhausted: %w", lastErr)
 }
 
 func (q *QwenProvider) parseResponse(data []byte) (*Response, error) {
@@ -256,14 +196,25 @@ func (q *QwenProvider) parseResponse(data []byte) (*Response, error) {
 	return resp, nil
 }
 
+func (q *QwenProvider) setRequestHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+q.apiKey)
+}
+
 func (q *QwenProvider) readSSE(ctx context.Context, body io.ReadCloser, ch chan<- Event) {
 	defer body.Close()
 	defer close(ch)
 
-	scanner := bufio.NewScanner(body)
+	reader := bufio.NewReader(body)
 	var sawDone bool
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, err := sse.ReadLine(reader)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("qwen: sse read: %w", err)})
+			return
+		}
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -334,10 +285,6 @@ func (q *QwenProvider) readSSE(ctx context.Context, body io.ReadCloser, ch chan<
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("qwen: sse scan: %w", err)})
-		return
-	}
 	if !sawDone {
 		_ = sendEvent(ctx, ch, Event{Kind: EventError, Err: fmt.Errorf("qwen: stream ended without [DONE]")})
 	}

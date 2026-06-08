@@ -8,7 +8,7 @@ observability integrations.
 The module path is:
 
 ```text
-github.com/yourorg/agent-sdk
+github.com/Kaelancode/kaeAgent-Public
 ```
 
 ## What This Repo Contains

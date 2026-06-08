@@ -8,14 +8,14 @@ Compaction is separate from persistence:
 - runtime can replace the retained in-memory message set after compaction
 
 Relevant code:
-- [compaction/compaction.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/compaction.go)
-- [compaction/trigger.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/trigger.go)
-- [compaction/estimator.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/estimator.go)
-- [compaction/strategy/slidingwindow/slidingwindow.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/strategy/slidingwindow/slidingwindow.go)
-- [compaction/strategy/summary/summary.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/strategy/summary/summary.go)
-- [compaction/strategy/turnwindow/turnwindow.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/strategy/turnwindow/turnwindow.go)
-- [compaction/strategy/tokenlimit/tokenlimit.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/strategy/tokenlimit/tokenlimit.go)
-- [agent/runtime.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/agent/runtime.go)
+- [`compaction/compaction.go`](../compaction/compaction.go)
+- [`compaction/trigger.go`](../compaction/trigger.go)
+- [`compaction/estimator.go`](../compaction/estimator.go)
+- [`compaction/strategy/slidingwindow/slidingwindow.go`](../compaction/strategy/slidingwindow/slidingwindow.go)
+- [`compaction/strategy/summary/summary.go`](../compaction/strategy/summary/summary.go)
+- [`compaction/strategy/turnwindow/turnwindow.go`](../compaction/strategy/turnwindow/turnwindow.go)
+- [`compaction/strategy/tokenlimit/tokenlimit.go`](../compaction/strategy/tokenlimit/tokenlimit.go)
+- [`agent/runtime_compaction.go`](../agent/runtime_compaction.go)
 
 ## Mental Model
 
@@ -65,7 +65,7 @@ After a final assistant response is appended for a user turn, runtime may compac
 - if `Output.Compacted == true`, replace retained messages
 - checkpoint to the configured `ConversationStore`
 
-This happens in [agent/runtime.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/agent/runtime.go:742).
+This happens in `agent/runtime_compaction.go` and is invoked by the final command-plan executor.
 
 ### 2. Preflight safety guard
 
@@ -77,13 +77,13 @@ estimated_input_tokens + output_reserve > model_context_limit
 
 runtime force-compacts before sending the request.
 
-This happens in [agent/runtime.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/agent/runtime.go:779).
+This happens in `agent/runtime_compaction.go` before each provider request.
 
 If compaction still cannot get the request under the hard limit, runtime returns an error instead of sending an unsafe request.
 
 ## Token Estimation
 
-The default estimator is `ApproxTokenEstimator` in [compaction/estimator.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/estimator.go).
+The default estimator is `ApproxTokenEstimator` in [`compaction/estimator.go`](../compaction/estimator.go).
 
 It estimates prompt tokens by:
 - summing message character lengths
@@ -96,11 +96,11 @@ Runtime's preflight request-size estimate is a little broader than the default m
 - tool call serialization
 - message wrapper overhead
 
-That logic is in [agent/runtime.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/agent/runtime.go:812).
+That logic is in `agent/runtime_compaction.go`.
 
 ## Built-in Triggers
 
-Built-in triggers are defined in [compaction/trigger.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/trigger.go).
+Built-in triggers are defined in [`compaction/trigger.go`](../compaction/trigger.go).
 
 ### `MaxTurnsTrigger`
 
@@ -140,10 +140,22 @@ This is useful for policies like:
 
 Built-in strategies live under `compaction/strategy/...`.
 
+## Public Helpers
+
+The `compaction` package keeps public helpers intentionally small. Helpers should be broadly reusable and semantics-neutral, not a base framework for all strategies.
+
+Current public helpers:
+- `compaction.CloneMessage(msg llm.Message) llm.Message`
+- `compaction.CloneMessages(messages []llm.Message) []llm.Message`
+
+Use these when a strategy returns retained messages from the input. They deep-copy `ToolCalls` and nested tool input maps/slices, preventing compaction output from aliasing caller-owned conversation state.
+
+Do not treat helper availability as strategy policy. Turn grouping, summary format, retention order, and config parsing remain strategy-owned decisions unless they become common enough that most custom strategies would use the same behavior.
+
 ### `slidingwindow`
 
 Implementation:
-- [compaction/strategy/slidingwindow/slidingwindow.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/strategy/slidingwindow/slidingwindow.go)
+- [`compaction/strategy/slidingwindow/slidingwindow.go`](../compaction/strategy/slidingwindow/slidingwindow.go)
 
 How it works:
 - preserves all `system` messages
@@ -183,7 +195,7 @@ assistant3
 ### `turnwindow`
 
 Implementation:
-- [compaction/strategy/turnwindow/turnwindow.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/strategy/turnwindow/turnwindow.go)
+- [`compaction/strategy/turnwindow/turnwindow.go`](../compaction/strategy/turnwindow/turnwindow.go)
 
 How it works:
 - preserves all `system` messages
@@ -212,7 +224,7 @@ This is the default runtime strategy used for `TrimSlidingWindow`.
 ### `summary`
 
 Implementation:
-- [compaction/strategy/summary/summary.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/strategy/summary/summary.go)
+- [`compaction/strategy/summary/summary.go`](../compaction/strategy/summary/summary.go)
 
 How it works:
 - preserves all `system` messages
@@ -261,7 +273,7 @@ assistant: "..."
 ### `tokenlimit`
 
 Implementation:
-- [compaction/strategy/tokenlimit/tokenlimit.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/compaction/strategy/tokenlimit/tokenlimit.go)
+- [`compaction/strategy/tokenlimit/tokenlimit.go`](../compaction/strategy/tokenlimit/tokenlimit.go)
 
 How it works:
 - preserves system messages
@@ -368,7 +380,7 @@ In short:
 
 ## Default Runtime Behavior
 
-If you do not supply a custom `Compactor`, runtime builds a default one from `SessionConfig` in [agent/runtime.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/agent/runtime.go:755).
+If you do not supply a custom `Compactor`, runtime builds a default one from `SessionConfig` in `agent/runtime.go`.
 
 ### `TrimSlidingWindow`
 
@@ -500,8 +512,8 @@ This gives you:
 - preflight force-compaction if the request is near the model context limit
 
 See the runnable example:
-- [examples/chat-compaction/main.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/examples/chat-compaction/main.go)
-- [examples/chat-summary-compaction/main.go](/home/aiops/Projects/agent_workshop/kaeAgent/agent-sdk-open/examples/chat-summary-compaction/main.go)
+- [`examples/chat-compaction/main.go`](../examples/chat-compaction/main.go)
+- [`examples/chat-summary-compaction/main.go`](../examples/chat-summary-compaction/main.go)
 
 ## Example Policy
 

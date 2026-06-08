@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 func TestCompactErrorsWhenSystemMessagesExceedMaxMessages(t *testing.T) {

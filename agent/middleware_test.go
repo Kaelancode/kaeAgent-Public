@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
 )
 
 func TestChain(t *testing.T) {

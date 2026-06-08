@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 const (
@@ -232,7 +234,7 @@ func roleLabel(m llm.Message) string {
 		}
 		return "Tool:"
 	default:
-		return strings.Title(m.Role) + ":"
+		return cases.Title(language.English).String(m.Role) + ":"
 	}
 }
 
@@ -293,19 +295,21 @@ func summaryPrefix(prefix string) string {
 }
 
 func truncate(s string, limit int) string {
-	if limit <= 0 || len(s) <= limit {
+	if limit <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= limit {
 		return s
 	}
 	if limit <= 3 {
-		return s[:limit]
+		return string(runes[:limit])
 	}
-	return s[:limit-3] + "..."
+	return string(runes[:limit-3]) + "..."
 }
 
 func cloneMessages(messages []llm.Message) []llm.Message {
-	out := make([]llm.Message, len(messages))
-	copy(out, messages)
-	return out
+	return compaction.CloneMessages(messages)
 }
 
 func cloneTurns(turns [][]llm.Message) [][]llm.Message {

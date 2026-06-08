@@ -91,10 +91,11 @@ func NewStdoutTracer(w io.Writer) *StdoutTracer {
 }
 
 func (t *StdoutTracer) StartSpan(ctx context.Context, name string, attrs map[string]string) (context.Context, Span) {
+	spanAttrs := cloneStringMap(attrs)
 	span := &stdoutSpan{
 		id:    generateSpanID(),
 		name:  name,
-		attrs: attrs,
+		attrs: spanAttrs,
 		start: time.Now(),
 	}
 
@@ -107,11 +108,22 @@ func (t *StdoutTracer) StartSpan(ctx context.Context, name string, attrs map[str
 	if span.parentID != "" {
 		t.write("  parent=%s", span.parentID)
 	}
-	t.writeAttrs(attrs)
+	t.writeAttrs(spanAttrs)
 	t.writeln("")
 	t.mu.Unlock()
 
 	return context.WithValue(ctx, ctxKey{}, span), span
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for k, v := range input {
+		out[k] = v
+	}
+	return out
 }
 
 func (t *StdoutTracer) EndSpan(_ context.Context, s Span, err error) {

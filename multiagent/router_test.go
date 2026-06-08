@@ -108,12 +108,19 @@ func TestRouter_RegisterMaterializesConfigOnlyAgentOnce(t *testing.T) {
 
 func TestRouter_List(t *testing.T) {
 	r := NewRouter()
-	r.Register(AgentConfig{Name: "a"})
 	r.Register(AgentConfig{Name: "b"})
+	r.Register(AgentConfig{Name: "a"})
+	r.Register(AgentConfig{Name: "c"})
 
 	names := r.List()
-	if len(names) != 2 {
-		t.Errorf("expected 2 names, got %d", len(names))
+	expected := []string{"a", "b", "c"}
+	if len(names) != len(expected) {
+		t.Fatalf("expected %d names, got %d", len(expected), len(names))
+	}
+	for i := range expected {
+		if names[i] != expected[i] {
+			t.Fatalf("expected sorted names %v, got %v", expected, names)
+		}
 	}
 }
 

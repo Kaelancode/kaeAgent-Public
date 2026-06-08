@@ -6,10 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 type fakeProvider struct {
@@ -404,7 +405,8 @@ func TestWorkflowAgentToolUsesAgentOwnedTools(t *testing.T) {
 	})
 	called := false
 	child.RegisterTool(tools.ToolDef{
-		Name: "lookup",
+		Name:   "lookup",
+		Schema: &schema.Schema{Type: "object"},
 		Handler: func(_ context.Context, _ map[string]any) (any, error) {
 			called = true
 			return map[string]any{"ok": true}, nil

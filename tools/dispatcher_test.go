@@ -3,22 +3,26 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/yourorg/agent-sdk/schema"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
 )
 
 func TestDispatcher_Dispatch(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name:        "echo",
 		Description: "Echo back the input",
+		Schema:      &schema.Schema{Type: "object"},
 		Handler: func(_ context.Context, input map[string]any) (any, error) {
 			return input["msg"], nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	d := NewDispatcher(r)
 	result := d.Dispatch(context.Background(), ToolCall{
@@ -50,7 +54,7 @@ func TestDispatcher_DispatchNotFound(t *testing.T) {
 
 func TestDispatcher_DispatchValidationError(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name: "strict",
 		Schema: &schema.Schema{
 			Type:     "object",
@@ -60,7 +64,9 @@ func TestDispatcher_DispatchValidationError(t *testing.T) {
 			},
 		},
 		Handler: func(_ context.Context, _ map[string]any) (any, error) { return nil, nil },
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	d := NewDispatcher(r)
 	result := d.Dispatch(context.Background(), ToolCall{
@@ -74,7 +80,7 @@ func TestDispatcher_DispatchValidationError(t *testing.T) {
 
 func TestDispatcher_DispatchPassesCoercedInputToHandler(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name: "coerce",
 		Schema: &schema.Schema{
 			Type:     "object",
@@ -111,7 +117,9 @@ func TestDispatcher_DispatchPassesCoercedInputToHandler(t *testing.T) {
 				"first":   first,
 			}, nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	d := NewDispatcher(r)
 	original := map[string]any{
@@ -138,12 +146,17 @@ func TestDispatcher_DispatchPassesCoercedInputToHandler(t *testing.T) {
 
 func TestDispatcher_DispatchHandlerError(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name: "failing",
+		Schema: &schema.Schema{
+			Type: "object",
+		},
 		Handler: func(_ context.Context, _ map[string]any) (any, error) {
 			return nil, fmt.Errorf("boom")
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	d := NewDispatcher(r)
 	result := d.Dispatch(context.Background(), ToolCall{Name: "failing"})
@@ -152,16 +165,47 @@ func TestDispatcher_DispatchHandlerError(t *testing.T) {
 	}
 }
 
+func TestDispatcher_DispatchChecksNilHandlerBeforeValidation(t *testing.T) {
+	r := NewRegistry()
+	r.tools["nil_handler"] = ToolDef{
+		Name: "nil_handler",
+		Schema: &schema.Schema{
+			Type:     "object",
+			Required: []string{"required"},
+			Properties: map[string]*schema.Schema{
+				"required": {Type: "string"},
+			},
+		},
+	}
+
+	d := NewDispatcher(r)
+	result := d.Dispatch(context.Background(), ToolCall{
+		Name:  "nil_handler",
+		Input: map[string]any{},
+	})
+	if result.Err == nil {
+		t.Fatal("expected nil handler error")
+	}
+	if !strings.Contains(result.Err.Error(), "has no handler") {
+		t.Fatalf("expected nil handler error before validation, got %v", result.Err)
+	}
+}
+
 func TestDispatcher_DispatchAll(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name: "add",
+		Schema: &schema.Schema{
+			Type: "object",
+		},
 		Handler: func(_ context.Context, input map[string]any) (any, error) {
 			a, _ := input["a"].(float64)
 			b, _ := input["b"].(float64)
 			return a + b, nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	d := NewDispatcher(r)
 	calls := []ToolCall{
@@ -189,8 +233,11 @@ func TestDispatcher_DispatchAllMaxConcurrent(t *testing.T) {
 	)
 
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name: "block",
+		Schema: &schema.Schema{
+			Type: "object",
+		},
 		Handler: func(_ context.Context, input map[string]any) (any, error) {
 			n := atomic.AddInt32(&current, 1)
 			for {
@@ -203,7 +250,9 @@ func TestDispatcher_DispatchAllMaxConcurrent(t *testing.T) {
 			atomic.AddInt32(&current, -1)
 			return input["id"], nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	d := NewDispatcher(r)
 	calls := []ToolCall{
@@ -244,14 +293,19 @@ func TestDispatcher_DispatchAllContextCancelledBeforeQueuedStart(t *testing.T) {
 	release := make(chan struct{})
 
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name: "block",
+		Schema: &schema.Schema{
+			Type: "object",
+		},
 		Handler: func(_ context.Context, input map[string]any) (any, error) {
 			started <- struct{}{}
 			<-release
 			return input["id"], nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	d := NewDispatcher(r)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -278,6 +332,33 @@ func TestDispatcher_DispatchAllContextCancelledBeforeQueuedStart(t *testing.T) {
 		if results[i].Err == nil {
 			t.Fatalf("expected queued call %d to be cancelled before start", i)
 		}
+	}
+}
+
+func TestDispatcher_DispatchAllRecoversPanic(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(ToolDef{
+		Name:   "panic",
+		Schema: &schema.Schema{Type: "object"},
+		Handler: func(_ context.Context, _ map[string]any) (any, error) {
+			panic("boom")
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	d := NewDispatcher(r)
+	results := d.DispatchAll(context.Background(), []ToolCall{
+		{ID: "c1", Name: "panic", Input: map[string]any{}},
+	}, 2)
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Fatal("expected panic error")
+	}
+	if !strings.Contains(results[0].Err.Error(), "panic: boom") {
+		t.Fatalf("unexpected error: %v", results[0].Err)
 	}
 }
 

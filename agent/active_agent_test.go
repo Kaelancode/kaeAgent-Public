@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 func TestResolveSessionAgentFallsBackToRoot(t *testing.T) {
@@ -39,6 +40,9 @@ func TestNewRuntimeResolvesRestoredActiveAgent(t *testing.T) {
 	})
 	root.RegisterTool(tools.ToolDef{
 		Name: "root_tool",
+		Schema: &schema.Schema{
+			Type: "object",
+		},
 		Handler: func(context.Context, map[string]any) (any, error) {
 			return "ok", nil
 		},
@@ -57,6 +61,9 @@ func TestNewRuntimeResolvesRestoredActiveAgent(t *testing.T) {
 	})
 	billing.RegisterTool(tools.ToolDef{
 		Name: "billing_tool",
+		Schema: &schema.Schema{
+			Type: "object",
+		},
 		Handler: func(context.Context, map[string]any) (any, error) {
 			return "ok", nil
 		},

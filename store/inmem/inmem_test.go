@@ -2,10 +2,11 @@ package inmem
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/llm"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
 )
 
 func TestConversationStore_SaveAndLoad(t *testing.T) {
@@ -124,6 +125,52 @@ func TestConversationStore_Delete(t *testing.T) {
 	}
 	if loaded != nil {
 		t.Errorf("expected nil after delete, got %v", loaded)
+	}
+}
+
+func TestConversationStore_RespectsCanceledContext(t *testing.T) {
+	s := NewConversationStore()
+	ctx := context.Background()
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	msgs := []llm.Message{{Role: "user", Content: "blocked"}}
+	if err := s.Save(canceled, "conv_cancel", msgs); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Save error, got %v", err)
+	}
+	loaded, err := s.Load(ctx, "conv_cancel")
+	if err != nil {
+		t.Fatalf("Load after canceled Save failed: %v", err)
+	}
+	if loaded != nil {
+		t.Fatalf("expected canceled Save to skip mutation, got %#v", loaded)
+	}
+
+	if err := s.Save(ctx, "conv_existing", []llm.Message{{Role: "user", Content: "initial"}}); err != nil {
+		t.Fatalf("Save existing failed: %v", err)
+	}
+	if _, err := s.Load(canceled, "conv_existing"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Load error, got %v", err)
+	}
+	if err := s.Append(canceled, "conv_existing", []llm.Message{{Role: "assistant", Content: "blocked"}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Append error, got %v", err)
+	}
+	loaded, err = s.Load(ctx, "conv_existing")
+	if err != nil {
+		t.Fatalf("Load after canceled Append failed: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected canceled Append to skip mutation, got %d messages", len(loaded))
+	}
+	if err := s.Delete(canceled, "conv_existing"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled Delete error, got %v", err)
+	}
+	loaded, err = s.Load(ctx, "conv_existing")
+	if err != nil {
+		t.Fatalf("Load after canceled Delete failed: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected canceled Delete to preserve data, got %#v", loaded)
 	}
 }
 

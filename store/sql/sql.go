@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/store"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/store"
 	_ "modernc.org/sqlite"
 )
 
@@ -43,6 +43,8 @@ type SQLStore struct {
 	locksMu  sync.Mutex
 	locks    map[string]*sync.Mutex
 }
+
+const maxMessageInsertRows = 100
 
 var (
 	_ store.ConversationStore = (*SQLConversationStore)(nil)
@@ -169,12 +171,23 @@ func (s *SQLStore) ensureSessionStub(ctx context.Context, sessionID string) erro
 	return s.ensureSessionStubExec(ctx, s.db, sessionID)
 }
 
+func autoStubUserID(sessionID string) string {
+	return "auto-user:" + sessionID
+}
+
+func autoStubAgentID(sessionID string) string {
+	return "auto-agent:" + sessionID
+}
+
 func (s *SQLStore) ensureSessionStubExec(ctx context.Context, exec contextExecutor, sessionID string) error {
+	userID := autoStubUserID(sessionID)
+	agentID := autoStubAgentID(sessionID)
+
 	userEnsure := fmt.Sprintf(
 		"INSERT INTO %s (id, created_at) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING",
 		s.tableName("users"), s.placeholder(1), s.nowExpr(),
 	)
-	if _, err := exec.ExecContext(ctx, userEnsure, "__stub__"); err != nil {
+	if _, err := exec.ExecContext(ctx, userEnsure, userID); err != nil {
 		return fmt.Errorf("sql: ensure user stub: %w", err)
 	}
 
@@ -184,7 +197,7 @@ func (s *SQLStore) ensureSessionStubExec(ctx context.Context, exec contextExecut
 		s.placeholder(1), s.placeholder(2), s.placeholder(3),
 		s.nowExpr(), s.nowExpr(),
 	)
-	if _, err := exec.ExecContext(ctx, agentEnsure, "__stub__", "__stub__", ""); err != nil {
+	if _, err := exec.ExecContext(ctx, agentEnsure, agentID, userID, ""); err != nil {
 		return fmt.Errorf("sql: ensure agent stub: %w", err)
 	}
 
@@ -197,7 +210,7 @@ func (s *SQLStore) ensureSessionStubExec(ctx context.Context, exec contextExecut
 		s.nowExpr(), s.nowExpr(),
 	)
 	if _, err := exec.ExecContext(ctx, sessionEnsure,
-		sessionID, "__stub__", "__stub__",
+		sessionID, agentID, userID,
 		"sliding_window", 50, 128000,
 		"{}", "{}", "{}",
 	); err != nil {
@@ -294,7 +307,7 @@ func (c *SQLConversationStore) appendTx(ctx context.Context, convID string, mess
 		return err
 	}
 
-	var maxSeq *int
+	var maxSeq int
 	row := tx.QueryRowContext(ctx,
 		fmt.Sprintf("SELECT COALESCE(MAX(seq), -1) FROM %s WHERE session_id = %s",
 			c.store.tableName("messages"), c.store.placeholder(1)),
@@ -303,10 +316,7 @@ func (c *SQLConversationStore) appendTx(ctx context.Context, convID string, mess
 	if err := row.Scan(&maxSeq); err != nil {
 		return fmt.Errorf("sql: get max seq: %w", err)
 	}
-	nextSeq := 0
-	if maxSeq != nil {
-		nextSeq = *maxSeq + 1
-	}
+	nextSeq := maxSeq + 1
 
 	if err := c.insertMessagesTx(ctx, tx, convID, nextSeq, messages); err != nil {
 		return err
@@ -349,33 +359,65 @@ func (c *SQLConversationStore) insertMessagesTx(ctx context.Context, tx *sql.Tx,
 		return nil
 	}
 
-	stmt := fmt.Sprintf(
-		"INSERT INTO %s (id, session_id, seq, role, content, name, tool_call_id, tool_calls, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-		c.store.tableName("messages"),
-		c.store.placeholder(1), c.store.placeholder(2), c.store.placeholder(3),
-		c.store.placeholder(4), c.store.placeholder(5), c.store.placeholder(6),
-		c.store.placeholder(7), c.store.placeholder(8), c.store.nowExpr(),
-	)
-
-	for i, msg := range messages {
-		var toolCallsJSON []byte
-		if len(msg.ToolCalls) > 0 {
-			toolCallsJSON, _ = json.Marshal(msg.ToolCalls)
-		} else {
-			toolCallsJSON = []byte("[]")
+	for start := 0; start < len(messages); start += maxMessageInsertRows {
+		end := start + maxMessageInsertRows
+		if end > len(messages) {
+			end = len(messages)
 		}
 
-		msgID := uuid.New().String()
-		if _, err := tx.ExecContext(ctx, stmt,
-			msgID, convID, startSeq+i,
-			msg.Role, msg.Content, msg.Name, msg.ToolCallID,
-			string(toolCallsJSON),
-		); err != nil {
-			return fmt.Errorf("sql: insert message %d: %w", i, err)
+		stmt, args, err := c.buildInsertMessagesStatement(convID, startSeq+start, messages[start:end], start)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+			return fmt.Errorf("sql: insert messages %d-%d: %w", start, end-1, err)
 		}
 	}
 
 	return nil
+}
+
+func (c *SQLConversationStore) buildInsertMessagesStatement(convID string, startSeq int, messages []llm.Message, offset int) (string, []any, error) {
+	args := make([]any, 0, len(messages)*8)
+	values := make([]string, 0, len(messages))
+
+	for i, msg := range messages {
+		var toolCallsJSON []byte
+		if len(msg.ToolCalls) > 0 {
+			var err error
+			toolCallsJSON, err = json.Marshal(msg.ToolCalls)
+			if err != nil {
+				return "", nil, fmt.Errorf("sql: marshal tool_calls for message %d: %w", offset+i, err)
+			}
+		} else {
+			toolCallsJSON = []byte("[]")
+		}
+
+		base := len(args) + 1
+		values = append(values, fmt.Sprintf("(%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+			c.store.placeholder(base),
+			c.store.placeholder(base+1),
+			c.store.placeholder(base+2),
+			c.store.placeholder(base+3),
+			c.store.placeholder(base+4),
+			c.store.placeholder(base+5),
+			c.store.placeholder(base+6),
+			c.store.placeholder(base+7),
+			c.store.nowExpr(),
+		))
+		args = append(args,
+			uuid.New().String(), convID, startSeq+i,
+			msg.Role, msg.Content, msg.Name, msg.ToolCallID,
+			string(toolCallsJSON),
+		)
+	}
+
+	stmt := fmt.Sprintf(
+		"INSERT INTO %s (id, session_id, seq, role, content, name, tool_call_id, tool_calls, created_at) VALUES %s",
+		c.store.tableName("messages"),
+		strings.Join(values, ", "),
+	)
+	return stmt, args, nil
 }
 
 func (c *SQLConversationStore) lockSession(ctx context.Context, tx *sql.Tx, convID string) error {
@@ -502,7 +544,10 @@ func (s *SQLSessionStore) SaveSession(ctx context.Context, data *store.SessionDa
 		return fmt.Errorf("sql: upsert agent: %w", err)
 	}
 
-	metadataJSON, _ := json.Marshal(data.Metadata)
+	metadataJSON, err := json.Marshal(data.Metadata)
+	if err != nil {
+		return fmt.Errorf("sql: marshal metadata: %w", err)
+	}
 	if metadataJSON == nil {
 		metadataJSON = []byte("{}")
 	}
@@ -598,7 +643,11 @@ func (s *SQLSessionStore) LoadSession(ctx context.Context, sessionID string) (*s
 			"max_history":   configMaxHistory,
 			"token_budget":  configTokenBudget,
 		}
-		data.Config, _ = json.Marshal(config)
+		var err error
+		data.Config, err = json.Marshal(config)
+		if err != nil {
+			return nil, fmt.Errorf("sql: marshal default config: %w", err)
+		}
 	}
 	data.Budget = json.RawMessage(budgetJSON)
 	if err := json.Unmarshal([]byte(metadataJSON), &data.Metadata); err != nil {

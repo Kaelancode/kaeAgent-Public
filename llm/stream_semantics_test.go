@@ -47,7 +47,7 @@ func TestGeminiReadSSE_ScanErrorDoesNotEmitDone(t *testing.T) {
 		}, ch)
 	})
 
-	assertTerminalErrorWithoutDone(t, events, "gemini: sse scan: boom")
+	assertTerminalErrorWithoutDone(t, events, "gemini: sse read: boom")
 }
 
 func collectProviderEvents(run func(chan<- Event)) []Event {

@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"math"
 	"testing"
 )
 
@@ -59,6 +60,51 @@ func TestSchema_ValidateNumber(t *testing.T) {
 	errs = s.Validate(float64(-1))
 	if len(errs) != 1 {
 		t.Errorf("expected 1 error for minimum, got %d", len(errs))
+	}
+}
+
+func TestSchema_ValidateNarrowIntegerTypes(t *testing.T) {
+	s := &Schema{Type: "integer"}
+	values := []any{
+		int8(1),
+		int16(2),
+		int32(3),
+		uint(4),
+		uint8(5),
+		uint16(6),
+		uint32(7),
+		uint64(8),
+	}
+
+	for _, value := range values {
+		errs := s.Validate(value)
+		if len(errs) != 0 {
+			t.Fatalf("expected no errors for %T, got %v", value, errs)
+		}
+	}
+}
+
+func TestSchema_ValidateIntegerRejectsNonFiniteValues(t *testing.T) {
+	s := &Schema{Type: "integer"}
+	values := []float64{math.NaN(), math.Inf(1), math.Inf(-1), 1.5}
+
+	for _, value := range values {
+		errs := s.Validate(value)
+		if len(errs) == 0 {
+			t.Fatalf("expected validation error for %v", value)
+		}
+	}
+}
+
+func TestSchema_ValidateUnknownType(t *testing.T) {
+	s := &Schema{Type: "aray"}
+
+	errs := s.Validate([]any{})
+	if len(errs) != 1 {
+		t.Fatalf("expected one unknown type error, got %v", errs)
+	}
+	if errs[0] != `$: unknown schema type "aray"` {
+		t.Fatalf("unexpected error: %q", errs[0])
 	}
 }
 
@@ -153,6 +199,33 @@ func TestSchema_CoerceAndValidate(t *testing.T) {
 	}
 	if coerced["active"] != true {
 		t.Errorf("expected active=true, got %v", coerced["active"])
+	}
+}
+
+func TestSchema_CoerceAndValidateAppliesOptionalDefaults(t *testing.T) {
+	s := &Schema{
+		Type: "object",
+		Properties: map[string]*Schema{
+			"required_name": {Type: "string", Default: "guest"},
+			"optional_plan": {Type: "string", Default: "starter"},
+			"provided":      {Type: "string", Default: "default"},
+		},
+		Required: []string{"required_name"},
+	}
+
+	input := map[string]any{"provided": "custom"}
+	coerced, errs := s.CoerceAndValidate(input)
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors after defaults, got %v", errs)
+	}
+	if coerced["required_name"] != "guest" {
+		t.Fatalf("expected required default, got %#v", coerced["required_name"])
+	}
+	if coerced["optional_plan"] != "starter" {
+		t.Fatalf("expected optional default, got %#v", coerced["optional_plan"])
+	}
+	if coerced["provided"] != "custom" {
+		t.Fatalf("expected provided value to be preserved, got %#v", coerced["provided"])
 	}
 }
 
@@ -280,5 +353,20 @@ func TestSchema_ToMap(t *testing.T) {
 	m := s.ToMap()
 	if m["type"] != "object" {
 		t.Errorf("expected type=object, got %v", m["type"])
+	}
+}
+
+func TestSchema_ToMapReturnsEmptyMapOnMarshalFailure(t *testing.T) {
+	s := &Schema{
+		Type:    "object",
+		Default: func() {},
+	}
+
+	m := s.ToMap()
+	if m == nil {
+		t.Fatal("expected non-nil map")
+	}
+	if len(m) != 0 {
+		t.Fatalf("expected empty map on marshal failure, got %#v", m)
 	}
 }

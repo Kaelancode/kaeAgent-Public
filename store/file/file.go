@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/store"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/store"
 )
 
 type ConversationStore struct {
@@ -32,9 +32,15 @@ func NewConversationStore(cfg Config) (*ConversationStore, error) {
 	return &ConversationStore{dir: dir}, nil
 }
 
-func (s *ConversationStore) Save(_ context.Context, convID string, messages []llm.Message) error {
+func (s *ConversationStore) Save(ctx context.Context, convID string, messages []llm.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	data, err := json.Marshal(messages)
 	if err != nil {
@@ -45,15 +51,24 @@ func (s *ConversationStore) Save(_ context.Context, convID string, messages []ll
 	if err != nil {
 		return err
 	}
-	return atomicWrite(path, data)
+	return atomicWriteContext(ctx, path, data)
 }
 
-func (s *ConversationStore) Load(_ context.Context, convID string) ([]llm.Message, error) {
+func (s *ConversationStore) Load(ctx context.Context, convID string) ([]llm.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	path, err := s.filePath(convID)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(path)
@@ -63,6 +78,9 @@ func (s *ConversationStore) Load(_ context.Context, convID string) ([]llm.Messag
 		}
 		return nil, fmt.Errorf("read file: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	var messages []llm.Message
 	if err := json.Unmarshal(data, &messages); err != nil {
@@ -71,9 +89,15 @@ func (s *ConversationStore) Load(_ context.Context, convID string) ([]llm.Messag
 	return messages, nil
 }
 
-func (s *ConversationStore) Append(_ context.Context, convID string, messages []llm.Message) error {
+func (s *ConversationStore) Append(ctx context.Context, convID string, messages []llm.Message) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	path, err := s.filePath(convID)
 	if err != nil {
@@ -81,6 +105,9 @@ func (s *ConversationStore) Append(_ context.Context, convID string, messages []
 	}
 	var existing []llm.Message
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read file: %w", err)
@@ -97,15 +124,24 @@ func (s *ConversationStore) Append(_ context.Context, convID string, messages []
 	if err != nil {
 		return fmt.Errorf("marshal merged messages: %w", err)
 	}
-	return atomicWrite(path, merged)
+	return atomicWriteContext(ctx, path, merged)
 }
 
-func (s *ConversationStore) Delete(_ context.Context, convID string) error {
+func (s *ConversationStore) Delete(ctx context.Context, convID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	path, err := s.filePath(convID)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -141,11 +177,23 @@ func (s *ConversationStore) filePath(convID string) (string, error) {
 }
 
 func atomicWrite(path string, data []byte) error {
+	return atomicWriteContext(context.Background(), path, data)
+}
+
+func atomicWriteContext(ctx context.Context, path string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return fmt.Errorf("write temp file: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 	return nil

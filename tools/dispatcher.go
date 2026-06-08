@@ -30,6 +30,14 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call ToolCall) ToolResult {
 		}
 	}
 
+	if tool.Handler == nil {
+		return ToolResult{
+			CallID: call.ID,
+			Name:   call.Name,
+			Err:    fmt.Errorf("dispatcher: tool %q has no handler", call.Name),
+		}
+	}
+
 	handlerInput := call.Input
 	if tool.Schema != nil {
 		coerced, errs := tool.Schema.CoerceAndValidate(call.Input)
@@ -41,14 +49,6 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call ToolCall) ToolResult {
 			}
 		}
 		handlerInput = coerced
-	}
-
-	if tool.Handler == nil {
-		return ToolResult{
-			CallID: call.ID,
-			Name:   call.Name,
-			Err:    fmt.Errorf("dispatcher: tool %q has no handler", call.Name),
-		}
 	}
 
 	result, err := tool.Handler(ctx, handlerInput)
@@ -96,7 +96,7 @@ func (d *Dispatcher) DispatchAllWith(ctx context.Context, calls []ToolCall, maxC
 				}
 				break
 			}
-			results[i] = dispatch(ctx, call)
+			results[i] = dispatchSafely(ctx, call, dispatch)
 		}
 		return results
 	}
@@ -124,7 +124,7 @@ func (d *Dispatcher) DispatchAllWith(ctx context.Context, calls []ToolCall, maxC
 			go func(idx int, c ToolCall) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				results[idx] = dispatch(ctx, c)
+				results[idx] = dispatchSafely(ctx, c, dispatch)
 			}(i, call)
 		}
 		if launchStopped {
@@ -134,6 +134,19 @@ func (d *Dispatcher) DispatchAllWith(ctx context.Context, calls []ToolCall, maxC
 
 	wg.Wait()
 	return results
+}
+
+func dispatchSafely(ctx context.Context, call ToolCall, dispatch func(context.Context, ToolCall) ToolResult) (result ToolResult) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = ToolResult{
+				CallID: call.ID,
+				Name:   call.Name,
+				Err:    fmt.Errorf("dispatcher: tool %q panic: %v", call.Name, recovered),
+			}
+		}
+	}()
+	return dispatch(ctx, call)
 }
 
 // ResultToString converts a ToolResult into a string suitable for sending back

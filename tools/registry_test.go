@@ -2,19 +2,32 @@ package tools
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/schema"
+	"github.com/Kaelancode/kaeAgent-Public/schema"
 )
+
+func validTestTool(name string) ToolDef {
+	return ToolDef{
+		Name:    name,
+		Schema:  &schema.Schema{Type: "object"},
+		Handler: func(_ context.Context, _ map[string]any) (any, error) { return "ok", nil },
+	}
+}
 
 func TestRegistry_RegisterAndGet(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name:        "test_tool",
 		Description: "a test tool",
 		Tags:        []string{"test", "utility"},
+		Schema:      &schema.Schema{Type: "object"},
 		Handler:     func(_ context.Context, _ map[string]any) (any, error) { return "ok", nil },
-	})
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	tool, ok := r.Get("test_tool")
 	if !ok {
@@ -27,9 +40,21 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 
 func TestRegistry_ByTag(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{Name: "a", Tags: []string{"web", "read-only"}})
-	r.Register(ToolDef{Name: "b", Tags: []string{"web"}})
-	r.Register(ToolDef{Name: "c", Tags: []string{"finance"}})
+	a := validTestTool("a")
+	a.Tags = []string{"web", "read-only"}
+	b := validTestTool("b")
+	b.Tags = []string{"web"}
+	c := validTestTool("c")
+	c.Tags = []string{"finance"}
+	if err := r.Register(a); err != nil {
+		t.Fatalf("Register a: %v", err)
+	}
+	if err := r.Register(b); err != nil {
+		t.Fatalf("Register b: %v", err)
+	}
+	if err := r.Register(c); err != nil {
+		t.Fatalf("Register c: %v", err)
+	}
 
 	web := r.ByTag("web")
 	if len(web) != 2 {
@@ -49,11 +74,14 @@ func TestRegistry_ByTag(t *testing.T) {
 
 func TestRegistry_ToProviderFormat_OpenAI(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{
+	if err := r.Register(ToolDef{
 		Name:        "search",
 		Description: "Search the web",
 		Schema:      &schema.Schema{Type: "object", Properties: map[string]*schema.Schema{"query": {Type: "string"}}},
-	})
+		Handler:     func(_ context.Context, _ map[string]any) (any, error) { return "ok", nil },
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	result := r.ToProviderFormat("openai")
 	tools, ok := result.([]map[string]any)
@@ -74,7 +102,11 @@ func TestRegistry_ToProviderFormat_OpenAI(t *testing.T) {
 
 func TestRegistry_ToProviderFormat_Anthropic(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{Name: "search", Description: "Search"})
+	tool := validTestTool("search")
+	tool.Description = "Search"
+	if err := r.Register(tool); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	result := r.ToProviderFormat("anthropic")
 	tools, ok := result.([]map[string]any)
@@ -91,7 +123,11 @@ func TestRegistry_ToProviderFormat_Anthropic(t *testing.T) {
 
 func TestRegistry_ToProviderFormat_GcpGemini(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{Name: "search", Description: "Search"})
+	tool := validTestTool("search")
+	tool.Description = "Search"
+	if err := r.Register(tool); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	result := r.ToProviderFormat("gcp.gemini")
 	m, ok := result.(map[string]any)
@@ -110,7 +146,9 @@ func TestRegistry_ToProviderFormat_GcpGemini(t *testing.T) {
 
 func TestRegistry_Remove(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ToolDef{Name: "to_remove"})
+	if err := r.Register(validTestTool("to_remove")); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
 
 	err := r.Remove("to_remove")
 	if err != nil {
@@ -123,5 +161,65 @@ func TestRegistry_Remove(t *testing.T) {
 	err = r.Remove("nonexistent")
 	if err == nil {
 		t.Error("expected error for removing nonexistent tool")
+	}
+}
+
+func TestRegistry_RegisterValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		tool ToolDef
+		want string
+	}{
+		{name: "empty name", tool: ToolDef{Schema: &schema.Schema{Type: "object"}, Handler: func(context.Context, map[string]any) (any, error) { return nil, nil }}, want: "tool name is required"},
+		{name: "nil schema", tool: ToolDef{Name: "bad", Handler: func(context.Context, map[string]any) (any, error) { return nil, nil }}, want: "schema is required"},
+		{name: "nil handler", tool: ToolDef{Name: "bad", Schema: &schema.Schema{Type: "object"}}, want: "handler is required"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRegistry()
+			err := r.Register(tt.tool)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q in error, got %v", tt.want, err)
+			}
+			if r.Count() != 0 {
+				t.Fatalf("expected invalid tool not to be registered")
+			}
+		})
+	}
+}
+
+func TestRegistry_RegisterRejectsDuplicate(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(validTestTool("dup")); err != nil {
+		t.Fatalf("Register first: %v", err)
+	}
+	err := r.Register(validTestTool("dup"))
+	if err == nil {
+		t.Fatal("expected duplicate error")
+	}
+	if !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Count() != 1 {
+		t.Fatalf("expected original tool to remain, count=%d", r.Count())
+	}
+}
+
+func TestRegistry_NamesSorted(t *testing.T) {
+	r := NewRegistry()
+	for _, name := range []string{"zeta", "alpha", "middle"} {
+		if err := r.Register(validTestTool(name)); err != nil {
+			t.Fatalf("Register %s: %v", name, err)
+		}
+	}
+
+	got := r.Names()
+	want := []string{"alpha", "middle", "zeta"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected sorted names %v, got %v", want, got)
 	}
 }

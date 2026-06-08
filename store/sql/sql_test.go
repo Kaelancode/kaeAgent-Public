@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/store"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/store"
 )
 
 func sqliteTestStore(t *testing.T) *SQLStore {
@@ -49,6 +49,42 @@ func pgTestStore(t *testing.T) *SQLStore {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func TestSQLite_MigrationRecordsCurrentSchemaVersion(t *testing.T) {
+	s := sqliteTestStore(t)
+	ctx := context.Background()
+
+	var appliedAt string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT applied_at FROM schema_migrations WHERE version = ?`,
+		currentSchemaVersion,
+	).Scan(&appliedAt); err != nil {
+		t.Fatalf("load schema migration version: %v", err)
+	}
+	if appliedAt == "" {
+		t.Fatalf("expected applied_at to be populated")
+	}
+}
+
+func TestSQLite_MigrationIsIdempotent(t *testing.T) {
+	s := sqliteTestStore(t)
+	ctx := context.Background()
+
+	if err := migrateSQLite(s.db); err != nil {
+		t.Fatalf("migrateSQLite second run: %v", err)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`,
+		currentSchemaVersion,
+	).Scan(&count); err != nil {
+		t.Fatalf("count schema migration version: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one schema migration row for version %d, got %d", currentSchemaVersion, count)
+	}
 }
 
 func testConversationStore(t *testing.T, convStore store.ConversationStore) {
@@ -239,6 +275,67 @@ func TestSQLLite_ConversationStore_ToolCallsRoundTrip(t *testing.T) {
 	testConversationToolCallsRoundTrip(t, sqliteTestStore(t).Messages)
 }
 
+func TestSQLite_ConversationStore_AutoStubDoesNotCreateGlobalStubRows(t *testing.T) {
+	s := sqliteTestStore(t)
+	ctx := context.Background()
+
+	if err := s.Messages.Save(ctx, "conv_auto_stub", []llm.Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	for _, table := range []string{"users", "agents", "sessions"} {
+		var count int
+		if err := s.db.QueryRowContext(ctx,
+			fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE id = ?", table),
+			"__stub__",
+		).Scan(&count); err != nil {
+			t.Fatalf("count %s stubs: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected no __stub__ rows in %s, got %d", table, count)
+		}
+	}
+
+	var userID, agentID string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT user_id, agent_id FROM sessions WHERE id = ?`,
+		"conv_auto_stub",
+	).Scan(&userID, &agentID); err != nil {
+		t.Fatalf("select auto-stub session: %v", err)
+	}
+	if userID != autoStubUserID("conv_auto_stub") {
+		t.Fatalf("expected derived user id, got %q", userID)
+	}
+	if agentID != autoStubAgentID("conv_auto_stub") {
+		t.Fatalf("expected derived agent id, got %q", agentID)
+	}
+}
+
+func TestSQLite_ConversationStore_SaveReturnsToolCallMarshalError(t *testing.T) {
+	s := sqliteTestStore(t)
+	ctx := context.Background()
+
+	err := s.Messages.Save(ctx, "conv_bad_tool_call", []llm.Message{
+		{
+			Role: "assistant",
+			ToolCalls: []llm.ToolCall{
+				{ID: "call_1", Name: "bad", Input: map[string]any{"unsupported": func() {}}},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected marshal error")
+	}
+
+	loaded, loadErr := s.Messages.Load(ctx, "conv_bad_tool_call")
+	if loadErr != nil {
+		t.Fatalf("Load: %v", loadErr)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("expected no messages after failed Save, got %+v", loaded)
+	}
+}
+
 func TestSQLLite_ConversationStore_SaveRollsBackOnInsertFailure(t *testing.T) {
 	s := sqliteTestStore(t)
 	ctx := context.Background()
@@ -387,6 +484,54 @@ func TestSQLite_ForeignKeysEnabledOnAllPooledConnections(t *testing.T) {
 		if enabled != 1 {
 			t.Fatalf("expected foreign_keys=1 on conn %d, got %d", i+1, enabled)
 		}
+	}
+}
+
+func TestSQLLite_ConversationStore_SaveBatchesLargeMessageInsert(t *testing.T) {
+	s := sqliteTestStore(t)
+	ctx := context.Background()
+
+	const messageCount = maxMessageInsertRows*2 + 5
+	messages := make([]llm.Message, messageCount)
+	for i := range messages {
+		messages[i] = llm.Message{Role: "user", Content: fmt.Sprintf("message-%d", i)}
+	}
+
+	if err := s.Messages.Save(ctx, "conv_batch", messages); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := s.Messages.Load(ctx, "conv_batch")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded) != messageCount {
+		t.Fatalf("expected %d messages, got %d", messageCount, len(loaded))
+	}
+	for i, msg := range loaded {
+		if msg.Content != fmt.Sprintf("message-%d", i) {
+			t.Fatalf("expected message-%d at index %d, got %#v", i, i, msg)
+		}
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT seq FROM messages WHERE session_id = ? ORDER BY seq`, "conv_batch")
+	if err != nil {
+		t.Fatalf("query seqs: %v", err)
+	}
+	defer rows.Close()
+
+	var seq int
+	for expected := 0; rows.Next(); expected++ {
+		if err := rows.Scan(&seq); err != nil {
+			t.Fatalf("scan seq: %v", err)
+		}
+		if seq != expected {
+			t.Fatalf("expected seq %d, got %d", expected, seq)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
 	}
 }
 

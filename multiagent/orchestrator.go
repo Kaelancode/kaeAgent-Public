@@ -4,13 +4,12 @@ package multiagent
 import (
 	"context"
 	"fmt"
-	"sync"
 
-	"github.com/yourorg/agent-sdk/agent"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/schema"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/agent"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
+	"github.com/Kaelancode/kaeAgent-Public/workflow"
 )
 
 // Orchestrator provides thin consult/transfer helpers over the core
@@ -40,11 +39,7 @@ type TransferRequest struct {
 	Metadata  map[string]string
 }
 
-type JoinResult struct {
-	Name   string
-	Output string
-	Err    error
-}
+type JoinResult = workflow.JoinResult
 
 // NewOrchestrator creates an orchestrator with a provider and router.
 func NewOrchestrator(provider llm.Provider, router *Router) *Orchestrator {
@@ -55,8 +50,8 @@ func NewOrchestrator(provider llm.Provider, router *Router) *Orchestrator {
 	}
 }
 
-// ToolRegistry returns the orchestrator's workflow tool registry so callers can
-// add their own deterministic workflow tools alongside WorkflowAgentTool values.
+// ToolRegistry returns the orchestrator's compatibility tool registry so callers
+// can add deterministic workflow tools alongside workflow.WorkflowAgentTool values.
 func (o *Orchestrator) ToolRegistry() *tools.Registry {
 	return o.registry
 }
@@ -189,119 +184,35 @@ func (o *Orchestrator) RunByTag(ctx context.Context, tag string, input string) (
 	})
 }
 
-// WorkflowAgentTool wraps an agent as a callable workflow step. The workflow or
-// application decides when to invoke it; model-driven subagent calls should use
-// the core runtime's consult_<subagent> synthetic tools instead.
+// WorkflowAgentTool wraps an agent as a callable workflow step.
+//
+// Deprecated: use workflow.WorkflowAgentTool.
 func WorkflowAgentTool(cfg AgentConfig, provider llm.Provider) tools.ToolDef {
-	minMsgLen := 1
-	return tools.ToolDef{
-		Name:        "agent_" + cfg.Name,
+	return workflow.WorkflowAgentTool(workflow.AgentConfig{
+		Agent:       cfg.Definition(),
+		Name:        cfg.Name,
 		Description: cfg.Description,
-		Schema: &schema.Schema{
-			Type: "object",
-			Properties: map[string]*schema.Schema{
-				"message": {
-					Type:        "string",
-					Description: "The task or question to send to the agent",
-					MinLength:   &minMsgLen,
-				},
-			},
-			Required: []string{"message"},
-		},
-		Tags: cfg.Tags,
-		Handler: func(ctx context.Context, input map[string]any) (any, error) {
-			message, ok := input["message"].(string)
-			if !ok || message == "" {
-				return nil, fmt.Errorf("workflow_agent_tool: 'message' field is required and must be a string")
-			}
-
-			definition := cfg.Definition()
-			maxSteps := cfg.MaxSteps
-			if maxSteps <= 0 && definition != nil {
-				maxSteps = definition.MaxSteps()
-			}
-			if maxSteps <= 0 {
-				maxSteps = 10
-			}
-
-			rt := agent.NewRuntime(agent.RuntimeConfig{
-				Provider: provider,
-				Agent:    definition,
-				MaxSteps: maxSteps,
-			})
-
-			result, err := rt.Run(ctx, message)
-			if err != nil {
-				return nil, fmt.Errorf("workflow_agent_tool %q: %w", cfg.Name, err)
-			}
-			return result, nil
-		},
-	}
+		Tags:        cfg.Tags,
+		MaxSteps:    cfg.MaxSteps,
+	}, provider)
 }
 
-// AgentTool is kept for compatibility with older router-based code. Prefer
-// WorkflowAgentTool when an application or workflow invokes an agent as a
-// deterministic step.
+// AgentTool is kept for compatibility with older router-based code.
 //
-// Deprecated: use WorkflowAgentTool.
+// Deprecated: use workflow.WorkflowAgentTool.
 func AgentTool(cfg AgentConfig, provider llm.Provider) tools.ToolDef {
 	return WorkflowAgentTool(cfg, provider)
 }
 
 // JoinAll waits for multiple child agent runs to complete concurrently.
 func JoinAll(ctx context.Context, tasks map[string]func(ctx context.Context) (string, error)) (map[string]string, error) {
-	detailed, err := JoinAllDetailed(ctx, tasks)
-	results := make(map[string]string, len(detailed))
-	for name, result := range detailed {
-		results[name] = result.Output
-	}
-	return results, err
+	return workflow.JoinAll(ctx, tasks)
 }
 
 // JoinAllDetailed waits for multiple child agent runs, returns partial results,
 // and cancels queued/in-flight siblings after the first error.
 func JoinAllDetailed(ctx context.Context, tasks map[string]func(ctx context.Context) (string, error)) (map[string]JoinResult, error) {
-	type result struct {
-		name   string
-		output string
-		err    error
-	}
-
-	childCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	ch := make(chan result, len(tasks))
-	var wg sync.WaitGroup
-
-	for name, fn := range tasks {
-		wg.Add(1)
-		go func(n string, f func(ctx context.Context) (string, error)) {
-			defer wg.Done()
-			out, err := f(childCtx)
-			ch <- result{name: n, output: out, err: err}
-		}(name, fn)
-	}
-
-	go func() {
-		wg.Wait()
-		close(ch)
-	}()
-
-	results := make(map[string]JoinResult, len(tasks))
-	var firstErr error
-	for r := range ch {
-		results[r.name] = JoinResult{
-			Name:   r.name,
-			Output: r.output,
-			Err:    r.err,
-		}
-		if r.err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("orchestrator: agent %q failed: %w", r.name, r.err)
-			cancel()
-		}
-	}
-
-	return results, firstErr
+	return workflow.JoinAllDetailed(ctx, tasks)
 }
 
 type routerResolver struct {

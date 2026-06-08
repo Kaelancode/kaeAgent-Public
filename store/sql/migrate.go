@@ -2,7 +2,16 @@ package sql
 
 import "strings"
 
+const currentSchemaVersion = 1
+
 func migratePostgreSQL(db queryExecutor) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		applied_at TIMESTAMP NOT NULL DEFAULT NOW()
+	)`); err != nil {
+		return err
+	}
+
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS users (
 			id         TEXT PRIMARY KEY,
@@ -54,10 +63,20 @@ func migratePostgreSQL(db queryExecutor) error {
 			return err
 		}
 	}
+	if _, err := db.Exec(`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`, currentSchemaVersion); err != nil {
+		return err
+	}
 	return nil
 }
 
 func migrateSQLite(db queryExecutor) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		return err
+	}
+
 	stmts := []string{
 		`PRAGMA foreign_keys = ON`,
 		`CREATE TABLE IF NOT EXISTS users (
@@ -113,6 +132,9 @@ func migrateSQLite(db queryExecutor) error {
 		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return err
 		}
+	}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)`, currentSchemaVersion); err != nil {
+		return err
 	}
 	return nil
 }

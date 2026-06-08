@@ -4,11 +4,11 @@ This file documents how conversational memory works in this SDK during `Run()` a
 
 ## Runtime Memory Flow for a Single `Run()` Call
 
-The runtime keeps memory in an in-memory `agent.Conversation`. When `Run()` starts, it appends the new user message to that conversation. For each step, it reads the full current retained message list from the conversation and sends that list to the LLM, so the model sees the entire current conversation buffer rather than only the latest turn.
+The runtime keeps memory in a run-local `agent.Conversation` snapshot. `Runtime.Run()` adapts the captured state into `agent/internal/engine.TurnInput`. The engine plans `append_user_message`, and the `agent` command interpreter applies it only after the initial budget check succeeds. For each step, the agent adapter builds the current message view and sends it to the LLM, so the model sees the full retained working conversation rather than only the latest turn.
 
 If the model returns a final assistant response, the runtime appends that assistant message to the conversation, checkpoints the full retained conversation to the configured `ConversationStore`, saves session metadata to `SessionStore` if one exists, and returns the final text. If the model returns tool calls, the runtime appends the assistant tool-call message, checkpoints the conversation, dispatches the tools, appends each tool result as a `role="tool"` message, checkpoints again, and then starts the next step with that updated history.
 
-This means memory is incremental in RAM but full-context on each LLM call: new messages are appended one by one, while each model request receives the full current retained history. The retained history may still be trimmed by the conversation strategy, so what gets sent is the entire current buffer after trimming, not necessarily the entire lifetime history.
+This means memory is incremental in run-local RAM but full-context on each LLM call: new messages are appended one by one, while each model request receives the full current retained history. Prompt reduction is performed explicitly by compaction; append operations do not silently trim the stored transcript.
 
 ## Run Sequence
 
@@ -17,6 +17,7 @@ sequenceDiagram
     autonumber
     participant U as User
     participant R as Runtime
+    participant E as Internal Engine
     participant C as Conversation
     participant P as LLM Provider
     participant D as Tool Dispatcher
@@ -24,10 +25,12 @@ sequenceDiagram
     participant SS as SessionStore
 
     U->>R: Run(ctx, userMessage)
+    R->>E: ExecuteTurn(TurnInput)
+    E-->>R: append_user_message command
     R->>C: Append(user message)
     C-->>R: Updated message history
 
-    loop Each step until final response or maxSteps
+    loop Engine drives each step until final response or maxSteps
         R->>C: Messages()
         C-->>R: Full retained history
         R->>P: Complete(request with full history + tools)

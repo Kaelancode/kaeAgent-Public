@@ -2,6 +2,18 @@
 
 This document defines the intended multi-agent model for the SDK.
 
+## Current Runtime Integration
+
+Both `Runtime.Run` and `Runtime.Stream` use the internal
+`agent/internal/engine.Engine.ExecuteTurn` progression loop. Model-driven consult
+and transfer are still agent-owned semantics:
+
+- synthetic subagent tools are exposed by `agent`
+- consult executes as tool-like isolated child work and returns to the caller
+- transfer commands are interpreted by `agent`, which changes active-agent state,
+  rebinds tools/config, and rotates trace ownership
+- the engine does not resolve or mutate public `agent` objects directly
+
 ## Goals
 
 - Keep session state isolated from other sessions.
@@ -99,15 +111,15 @@ No implicit parent conversation sharing should occur.
 
 #### Workflow Agent Tools
 
-`WorkflowAgentTool(...)` is not the primary model-driven consult mechanism.
+`workflow.WorkflowAgentTool(...)` is not the primary model-driven consult mechanism.
 It exists for application-owned or workflow-owned orchestration where the caller has already decided that a specific agent should run as a deterministic step.
 
 Use:
 
 - `consult_<subagent>` when the model chooses to consult a declared subagent during an agent run.
-- `WorkflowAgentTool(...)` when application code or a workflow engine invokes a specific agent step directly.
+- `workflow.WorkflowAgentTool(...)` when application code or a workflow engine invokes a specific agent step directly.
 
-The older `AgentTool(...)` name is a compatibility wrapper and should not be used for new workflow-facing code.
+The older `multiagent.AgentTool(...)` name is a compatibility wrapper and should not be used for new workflow-facing code.
 
 ##### Model-Driven Consult Tool Contract
 
@@ -215,13 +227,13 @@ The normal setup is:
 
 `multiagent.Router.Register(...)` is not required for this path.
 
-### Multiagent Package Path
+### Package Paths
 
-The `multiagent` package is a workflow and compatibility layer.
+The `multiagent` package is a compatibility and router/discovery layer.
 
-- `Router.Register(...)` registers agents for workflow helpers, tag lookup, and compatibility orchestrator calls.
-- `WorkflowAgentTool(...)` is for deterministic application/workflow-owned delegation.
+- `Router.Register(...)` registers agents for tag lookup and compatibility orchestrator calls.
 - `Orchestrator.Consult(...)` and `Orchestrator.Transfer(...)` are API-driven helpers where application code has already selected the target agent.
+- `workflow.WorkflowAgentTool(...)` is for deterministic application/workflow-owned delegation.
 
 Do not treat router registration as the mechanism that exposes model-driven
 subagent tools during `Runtime.Run` or `Runtime.Stream`.

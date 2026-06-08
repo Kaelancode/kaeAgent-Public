@@ -1,5 +1,5 @@
-// Package multiagent provides compatibility and workflow helpers around the
-// core agent runtime's multi-agent model.
+// Package multiagent provides compatibility and router helpers around the core
+// agent runtime's multi-agent model.
 //
 // The primary model-driven subagent mechanisms live in package agent. Declared
 // subagents may be exposed to the model as synthetic consult_<subagent> and
@@ -14,10 +14,11 @@
 //   - Orchestrator.Transfer and TransferStream switch reply ownership to a
 //     selected subagent through the session active-agent state. These helpers
 //     also require application code to choose the target agent.
-//   - WorkflowAgentTool and RegisterWorkflowAgentTools are for deterministic
-//     application or workflow composition where code has already selected the
-//     next agent step.
-//   - Router.Register registers agents for this workflow/compatibility layer.
+//   - WorkflowAgentTool and RegisterWorkflowAgentTools are deprecated
+//     compatibility wrappers. Prefer package workflow for deterministic
+//     application-owned workflow composition.
+//   - Router.Register registers agents for this compatibility layer and tag
+//     discovery.
 //     It is not required for normal Runtime.Run model-driven consult/transfer.
 //
 // Do not use router/tag lookup as the core orchestration intelligence. The

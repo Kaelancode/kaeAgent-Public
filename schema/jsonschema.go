@@ -4,6 +4,7 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -56,9 +57,17 @@ func (s *Schema) CoerceAndValidate(input map[string]any) (map[string]any, []stri
 
 // ToMap converts the schema to a map[string]any suitable for JSON serialization.
 func (s *Schema) ToMap() map[string]any {
-	data, _ := json.Marshal(s)
+	data, err := json.Marshal(s)
+	if err != nil {
+		return map[string]any{}
+	}
 	var m map[string]any
-	_ = json.Unmarshal(data, &m)
+	if err := json.Unmarshal(data, &m); err != nil {
+		return map[string]any{}
+	}
+	if m == nil {
+		return map[string]any{}
+	}
 	return m
 }
 
@@ -120,7 +129,7 @@ func validateValue(s *Schema, value any, path string) []string {
 			return []string{fmt.Sprintf("%s: expected %s, got %T", pathOrRoot(path), s.Type, value)}
 		}
 		if s.Type == "integer" {
-			if num != float64(int64(num)) {
+			if !isIntegerNumber(num) {
 				errs = append(errs, fmt.Sprintf("%s: expected integer, got %v", pathOrRoot(path), num))
 			}
 		}
@@ -135,6 +144,8 @@ func validateValue(s *Schema, value any, path string) []string {
 		if _, ok := value.(bool); !ok {
 			return []string{fmt.Sprintf("%s: expected boolean, got %T", pathOrRoot(path), value)}
 		}
+	default:
+		return []string{fmt.Sprintf("%s: unknown schema type %q", pathOrRoot(path), s.Type)}
 	}
 
 	if len(s.Enum) > 0 && !enumContains(s, value) {
@@ -166,11 +177,9 @@ func (s *Schema) coerceObject(input map[string]any) map[string]any {
 		result[k] = coerceValue(propSchema, v)
 	}
 
-	for _, req := range s.Required {
-		if _, exists := result[req]; !exists {
-			if propSchema, hasProp := s.Properties[req]; hasProp && propSchema.Default != nil {
-				result[req] = propSchema.Default
-			}
+	for name, propSchema := range s.Properties {
+		if _, exists := result[name]; !exists && propSchema.Default != nil {
+			result[name] = propSchema.Default
 		}
 	}
 
@@ -191,8 +200,8 @@ func coerceValue(s *Schema, value any) any {
 				return float64(i) // JSON numbers are float64
 			}
 		}
-		if f, ok := value.(float64); ok {
-			return float64(int64(f))
+		if f, ok := value.(float64); ok && isIntegerNumber(f) {
+			return f
 		}
 	case "number":
 		if isStr {
@@ -225,6 +234,10 @@ func coerceValue(s *Schema, value any) any {
 	return value
 }
 
+func isIntegerNumber(num float64) bool {
+	return !math.IsNaN(num) && !math.IsInf(num, 0) && math.Trunc(num) == num
+}
+
 func toFloat64(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
@@ -233,7 +246,23 @@ func toFloat64(v any) (float64, bool) {
 		return float64(n), true
 	case int:
 		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
 	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
 		return float64(n), true
 	case json.Number:
 		f, err := n.Float64()
