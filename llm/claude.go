@@ -12,8 +12,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yourorg/agent-sdk/internal/llmhttp"
-	"github.com/yourorg/agent-sdk/internal/sse"
+	"github.com/Kaelancode/kaeAgent-Public/internal/llmhttp"
+	"github.com/Kaelancode/kaeAgent-Public/internal/sse"
 )
 
 const (

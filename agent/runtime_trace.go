@@ -4,8 +4,8 @@ import (
 	"context"
 	"strconv"
 
-	agenttrace "github.com/yourorg/agent-sdk/agent/internal/trace"
-	"github.com/yourorg/agent-sdk/observability"
+	agenttrace "github.com/Kaelancode/kaeAgent-Public/agent/internal/trace"
+	"github.com/Kaelancode/kaeAgent-Public/observability"
 )
 
 type runTraceState struct {

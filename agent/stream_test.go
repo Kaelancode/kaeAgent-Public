@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 type streamResponseStep struct {

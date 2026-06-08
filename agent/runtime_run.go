@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yourorg/agent-sdk/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
 )
 
 func (r *Runtime) Run(ctx context.Context, userMessage string) (string, error) {

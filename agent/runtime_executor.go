@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"strings"
 
-	agentengine "github.com/yourorg/agent-sdk/agent/internal/engine"
-	agentstreaming "github.com/yourorg/agent-sdk/agent/internal/streaming"
-	agenttrace "github.com/yourorg/agent-sdk/agent/internal/trace"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/observability"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	agentengine "github.com/Kaelancode/kaeAgent-Public/agent/internal/engine"
+	agentstreaming "github.com/Kaelancode/kaeAgent-Public/agent/internal/streaming"
+	agenttrace "github.com/Kaelancode/kaeAgent-Public/agent/internal/trace"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/observability"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 func (e *runExecutor) buildStepInfo(step int) *Step {

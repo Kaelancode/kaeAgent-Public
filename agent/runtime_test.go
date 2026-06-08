@@ -8,13 +8,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/yourorg/agent-sdk/compaction"
-	"github.com/yourorg/agent-sdk/compaction/strategy/slidingwindow"
-	"github.com/yourorg/agent-sdk/llm"
-	"github.com/yourorg/agent-sdk/observability"
-	"github.com/yourorg/agent-sdk/store"
-	"github.com/yourorg/agent-sdk/streaming"
-	"github.com/yourorg/agent-sdk/tools"
+	"github.com/Kaelancode/kaeAgent-Public/compaction"
+	"github.com/Kaelancode/kaeAgent-Public/compaction/strategy/slidingwindow"
+	"github.com/Kaelancode/kaeAgent-Public/llm"
+	"github.com/Kaelancode/kaeAgent-Public/observability"
+	"github.com/Kaelancode/kaeAgent-Public/store"
+	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/Kaelancode/kaeAgent-Public/tools"
 )
 
 type fakeProvider struct {
