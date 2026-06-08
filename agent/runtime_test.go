@@ -157,6 +157,41 @@ func (r *recordingTracer) SetSpanAttributes(_ context.Context, _ observability.S
 	r.attrs = append(r.attrs, cloneAnyMap(attrs))
 }
 
+type parentRecordingSpan struct {
+	id       int
+	name     string
+	parentID int
+}
+
+type parentRecordingContextKey struct{}
+
+type parentRecordingTracer struct {
+	spans []*parentRecordingSpan
+}
+
+var _ observability.Tracer = (*parentRecordingTracer)(nil)
+
+func (r *parentRecordingTracer) StartSpan(ctx context.Context, name string, _ map[string]string) (context.Context, observability.Span) {
+	parent, _ := ctx.Value(parentRecordingContextKey{}).(*parentRecordingSpan)
+	span := &parentRecordingSpan{
+		id:   len(r.spans) + 1,
+		name: name,
+	}
+	if parent != nil {
+		span.parentID = parent.id
+	}
+	r.spans = append(r.spans, span)
+	return context.WithValue(ctx, parentRecordingContextKey{}, span), span
+}
+
+func (*parentRecordingTracer) EndSpan(context.Context, observability.Span, error) {}
+
+func (*parentRecordingTracer) AddEvent(context.Context, observability.Span, string, map[string]string) {
+}
+
+func (*parentRecordingTracer) SetSpanAttributes(context.Context, observability.Span, map[string]any) {
+}
+
 func findRecordedTraceEvent(events []recordedTraceEvent, name string) (recordedTraceEvent, bool) {
 	for _, event := range events {
 		if event.Name == name {
@@ -173,6 +208,33 @@ func findRecordedTraceEventWhere(events []recordedTraceEvent, name string, match
 		}
 	}
 	return recordedTraceEvent{}, false
+}
+
+func TestRuntime_TransferAgentSpansRemainChildrenOfRoot(t *testing.T) {
+	tracer := &parentRecordingTracer{}
+	root := NewAgent(AgentConfig{Name: "root", Model: "root-model"})
+	rt := NewRuntime(RuntimeConfig{
+		Agent:  root,
+		Tracer: tracer,
+	})
+	exec := rt.newRunExecutor()
+	trace := exec.startRunTrace(context.Background(), "start")
+
+	exec.rotateTransferTrace(trace, "root", "billing", "handle billing", "")
+	exec.rotateTransferTrace(trace, "billing", "technical", "handle setup", "")
+
+	if len(tracer.spans) != 3 {
+		t.Fatalf("expected 3 agent spans, got %+v", tracer.spans)
+	}
+	rootSpan := tracer.spans[0]
+	if rootSpan.name != "invoke_agent root" || rootSpan.parentID != 0 {
+		t.Fatalf("expected root span without parent, got %+v", rootSpan)
+	}
+	for _, span := range tracer.spans[1:] {
+		if span.parentID != rootSpan.id {
+			t.Fatalf("expected %q to be a direct child of root span %d, got parent %d", span.name, rootSpan.id, span.parentID)
+		}
+	}
 }
 
 func cloneAnyMap(input map[string]any) map[string]any {

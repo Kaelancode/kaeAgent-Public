@@ -4,12 +4,13 @@ import (
 	"context"
 	"strconv"
 
-	agenttrace "github.com/Kaelancode/kaeAgent-Public/agent/internal/trace"
-	"github.com/Kaelancode/kaeAgent-Public/observability"
+	agenttrace "github.com/yourorg/agent-sdk/agent/internal/trace"
+	"github.com/yourorg/agent-sdk/observability"
 )
 
 type runTraceState struct {
 	ctx       context.Context
+	rootCtx   context.Context
 	runSpan   observability.Span
 	agentSpan observability.Span
 }
@@ -43,6 +44,7 @@ func (e *runExecutor) startRunTrace(ctx context.Context, userMessage string) *ru
 		spanName = "invoke_agent " + agentName
 	}
 	trace.ctx, trace.runSpan = e.rt.tracer.StartSpan(ctx, spanName, spanAttrs)
+	trace.rootCtx = trace.ctx
 	trace.agentSpan = trace.runSpan
 
 	inputJSON := agenttrace.TextMessageJSON("user", userMessage)
@@ -116,7 +118,7 @@ func (e *runExecutor) rotateTransferTrace(trace *runTraceState, fromAgent, toAge
 		"gen_ai.agent.name":      toAgent,
 		"session.id":             e.rs.sessionID,
 	}
-	trace.ctx, trace.agentSpan = e.rt.tracer.StartSpan(trace.ctx, "invoke_agent "+toAgent, agentSpanAttrs)
+	trace.ctx, trace.agentSpan = e.rt.tracer.StartSpan(trace.rootCtx, "invoke_agent "+toAgent, agentSpanAttrs)
 
 	if transferInput == "" {
 		transferInput = fallbackText
