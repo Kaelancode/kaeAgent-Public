@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Kaelancode/kaeAgent-Public/streaming"
+	"github.com/yourorg/agent-sdk/streaming"
 )
 
 func (r *Runtime) Run(ctx context.Context, userMessage string) (string, error) {
@@ -42,7 +42,9 @@ func (r *Runtime) Stream(ctx context.Context, userMessage string) (<-chan stream
 		adapter := streamingRunOutputAdapter{rt: r, out: out}
 		if _, err := exec.executeEngineStreamingTurn(userMessage, handler, adapter, trace, out); err != nil {
 			runtimeErr, traceErr := runtimeTurnError(err)
-			_ = adapter.EmitError(trace.ctx, runtimeErr)
+			if emitErr := adapter.EmitError(trace.ctx, runtimeErr); emitErr != nil {
+				r.logger.Warn().Err(emitErr).Msg("runtime: failed to emit streaming error event")
+			}
 			exec.endRunTrace(trace, traceErr)
 		} else {
 			exec.endRunTrace(trace, nil)
