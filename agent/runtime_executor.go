@@ -434,12 +434,12 @@ func (e *runExecutor) executeStreamingStep(ctx context.Context, step *StreamingS
 					}
 				}
 			case llm.EventError:
-				if event.Err != nil {
-					if e.rt.tracer != nil && llmSpan != nil {
-						e.rt.tracer.EndSpan(ctx, llmSpan, event.Err)
-					}
-					return nil, fmt.Errorf("runtime: stream error: %w", event.Err)
+				streamErr := event.Err
+				if streamErr == nil {
+					streamErr = fmt.Errorf("provider emitted error event without details")
 				}
+				e.finishStreamingLLMSpan(ctx, llmSpan, req, textBuilder.String(), nil, usage, responseFinishReason, streamErr)
+				return nil, fmt.Errorf("runtime: stream error: %w", streamErr)
 			case llm.EventDone:
 				toolCalls, asmErr := assembler.Assemble()
 				if asmErr != nil {
